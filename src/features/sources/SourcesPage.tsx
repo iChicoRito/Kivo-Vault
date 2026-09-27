@@ -182,7 +182,7 @@ export function SourcesPage() {
           title={sourcesTitle}
           titleId="sources-title"
         />
-        <Button onPress={openCreate}>
+        <Button data-tour="sources" onPress={openCreate}>
           <HugeiconsIcon aria-hidden="true" icon={PlusSignIcon} size={18} />
           New Source
         </Button>

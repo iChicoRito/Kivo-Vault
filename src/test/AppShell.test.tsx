@@ -63,7 +63,10 @@ function RouteMarker() {
   return <h1>{pathname}</h1>
 }
 
-function renderShell(initialPath = '/dashboard', preferences: Partial<Preferences> = {}) {
+function renderShell(
+  initialPath: string | { pathname: string; state: unknown } = '/dashboard',
+  preferences: Partial<Preferences> = {},
+) {
   return render(
     <PreferencesProvider initialPreferences={{ ...DEFAULT_PREFERENCES, ...preferences }}>
       <MemoryRouter initialEntries={[initialPath]}>
@@ -107,6 +110,18 @@ async function activateWithEnter(element: HTMLElement) {
 }
 
 describe('AppShell', () => {
+  it('starts the guided tour when a page asks for it through the location state', async () => {
+    renderShell({ pathname: '/dashboard', state: { tour: true } })
+
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Welcome to Kivo')
+  })
+
+  it('does not start the guided tour on a normal visit', () => {
+    renderShell('/dashboard')
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
   it('renders every destination in the dock in documented order', () => {
     renderShell()
 

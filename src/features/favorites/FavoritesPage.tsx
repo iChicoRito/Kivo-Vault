@@ -156,7 +156,7 @@ export function FavoritesPage() {
         titleId="favorites-title"
       />
 
-      <div className="flex flex-wrap items-end gap-3">
+      <div className="flex flex-wrap items-end gap-3" data-tour="favorites">
         <KindSelect value={kind} onChange={setKind} />
       </div>
 

@@ -198,6 +198,7 @@ export function TrashPage() {
           titleId="trash-title"
         />
         <Button
+          data-tour="trash"
           isDisabled={items.length === 0}
           variant="danger"
           onPress={() => setEmptyOpen(true)}

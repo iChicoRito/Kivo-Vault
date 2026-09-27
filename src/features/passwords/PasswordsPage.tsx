@@ -197,7 +197,7 @@ function PasswordsPageContent() {
           <Input fullWidth placeholder="I am looking for..." variant="secondary" />
         </TextField>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2" data-tour="passwords">
           <Button isDisabled={locking} variant="secondary" onPress={() => void handleLock()}>
             <HugeiconsIcon aria-hidden="true" icon={SquareLock01Icon} size={18} />
             {locking ? 'Locking...' : 'Lock Vault'}

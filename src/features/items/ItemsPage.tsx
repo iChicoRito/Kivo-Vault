@@ -203,7 +203,7 @@ export function ItemsPage() {
         titleId="items-title"
       />
 
-      <div className="flex flex-wrap items-end gap-3">
+      <div className="flex flex-wrap items-end gap-3" data-tour="items">
         <TextField className="w-full max-w-sm" value={query} onChange={setQuery}>
           <Label>Search items</Label>
           <Input fullWidth placeholder="Search by title" variant="secondary" />

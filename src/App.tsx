@@ -58,10 +58,18 @@ export function App() {
 
   const route: BootState = enteredApp ? 'ready' : startup.route
 
-  return <BootRoute route={route} onEnterApp={() => setEnteredApp(true)} />
+  return <BootRoute route={route} startTour={enteredApp} onEnterApp={() => setEnteredApp(true)} />
 }
 
-function BootRoute({ route, onEnterApp }: { route: BootState; onEnterApp: () => void }) {
+function BootRoute({
+  route,
+  startTour,
+  onEnterApp,
+}: {
+  route: BootState
+  startTour: boolean
+  onEnterApp: () => void
+}) {
   if (route === 'onboarding') {
     return (
       <main
@@ -75,16 +83,17 @@ function BootRoute({ route, onEnterApp }: { route: BootState; onEnterApp: () => 
 
   // The lock state lives in the provider, so a locked boot and a lock later in
   // the session take the same path: routes never mount while locked.
-  return <ReadyApplication initialLocked={route === 'locked'} />
+  // Only a vault created in this session gets the guided tour.
+  return <ReadyApplication initialLocked={route === 'locked'} startTour={startTour} />
 }
 
-function ReadyApplication({ initialLocked }: { initialLocked: boolean }) {
+function ReadyApplication({ initialLocked, startTour }: { initialLocked: boolean; startTour: boolean }) {
   return (
     <PreferencesProvider>
       <LockProvider initialLocked={initialLocked}>
         <BrowserRouter>
           <VaultProvider>
-            <AppRoutes />
+            <AppRoutes startTour={startTour} />
           </VaultProvider>
         </BrowserRouter>
       </LockProvider>

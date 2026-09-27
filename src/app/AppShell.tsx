@@ -16,6 +16,7 @@ import { shortcuts, matchesShortcut } from './shortcuts'
 import DotField from '../components/ui/DotField'
 import { QuickAddDialog } from '../features/quick-add/QuickAddDialog'
 import { ShortcutsDialog } from '../features/shortcuts/ShortcutsDialog'
+import GuidedTour from '../features/tour/GuidedTour'
 import { usePreferences } from './preferences'
 
 function ThemeToggle() {
@@ -132,7 +133,7 @@ function AppBackground() {
   )
 }
 
-export default function AppShell() {
+export default function AppShell({ startTour = false }: { startTour?: boolean }) {
   const mainRef = useRef<HTMLDivElement>(null)
   const hidden = useHideOnScroll(mainRef)
   const navigate = useNavigate()
@@ -141,7 +142,17 @@ export default function AppShell() {
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickAction, setQuickAction] = useState<'file' | 'source' | 'collection' | undefined>()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [touring, setTouring] = useState(startTour)
   const { navigationStyle } = usePreferences().preferences
+
+  // Settings restarts the tour by opening the Dashboard with `{ tour: true }`.
+  // The state is cleared right away, so going back through history does not replay it.
+  const tourRequested = (location.state as { tour?: boolean } | null)?.tour === true
+  useEffect(() => {
+    if (!tourRequested) return
+    setTouring(true)
+    navigate(location.pathname, { replace: true, state: null })
+  }, [tourRequested, navigate, location.pathname])
 
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
@@ -188,6 +199,7 @@ export default function AppShell() {
         <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onQuickAdd={(action) => { setQuickAction(action); setQuickOpen(true) }} onShortcuts={() => setShortcutsOpen(true)} />
         <QuickAddDialog key={quickAction ?? 'menu'} open={quickOpen} initialAction={quickAction ?? null} onClose={() => setQuickOpen(false)} />
         <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+        {touring ? <GuidedTour onDone={() => setTouring(false)} /> : null}
       </div>
     </div>
   )

@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import { flushSync } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
 import {
   Button,
   Card,
@@ -280,6 +281,7 @@ export default function SettingsPage() {
   const [resetBusy, setResetBusy] = useState(false)
   const [resetError, setResetError] = useState<string | null>(null)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const navigate = useNavigate()
   const [indexStates, setIndexStates] = useState<IndexState[]>([])
   const [reindexBusy, setReindexBusy] = useState(false)
 
@@ -700,6 +702,20 @@ export default function SettingsPage() {
               </div>
               <Button variant="secondary" onPress={() => setShortcutsOpen(true)}>
                 Show shortcuts
+              </Button>
+            </div>
+            <Separator />
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="grid gap-0.5">
+                <Typography type="body" weight="medium">
+                  Guided tour
+                </Typography>
+                <Typography color="muted" type="body-sm">
+                  Walk through every page again and see what each one does.
+                </Typography>
+              </div>
+              <Button variant="secondary" onPress={() => navigate('/dashboard', { state: { tour: true } })}>
+                Take the tour
               </Button>
             </div>
           </SettingsSection>

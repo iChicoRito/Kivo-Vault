@@ -29,10 +29,10 @@ export function NotFoundPage() {
   )
 }
 
-export function AppRoutes() {
+export function AppRoutes({ startTour = false }: { startTour?: boolean }) {
   return (
     <Routes>
-      <Route element={<AppShell />}>
+      <Route element={<AppShell startTour={startTour} />}>
         <Route index element={<Navigate replace to="/dashboard" />} />
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="settings" element={<SettingsPage />} />

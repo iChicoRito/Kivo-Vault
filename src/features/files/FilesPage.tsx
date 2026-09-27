@@ -257,7 +257,7 @@ export function FilesPage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         {heading}
         {loadState === 'ready' ? (
-          <Button isDisabled={busy} onPress={() => void handleImport()}>
+          <Button data-tour="files" isDisabled={busy} onPress={() => void handleImport()}>
             Import files
           </Button>
         ) : null}

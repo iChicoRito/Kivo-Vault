@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest'
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 
 const settingsMock = vi.hoisted(() => ({
   loadProfile: vi.fn(),
@@ -107,11 +108,19 @@ const AUTOSTART_NOT_SAVED =
 const APPEARANCE_SAVE_ERROR = 'Kivo could not save this change. Your settings are unchanged.'
 const START_AT_LOGIN = 'Open Kivo when you sign in'
 
+function LocationProbe() {
+  const location = useLocation()
+  return <output data-testid="location">{location.pathname + JSON.stringify(location.state)}</output>
+}
+
 async function renderSettings(overrides: Partial<Preferences> = {}) {
   render(
-    <PreferencesProvider initialPreferences={{ ...PREFERENCES, ...overrides }}>
-      <SettingsPage />
-    </PreferencesProvider>,
+    <MemoryRouter>
+      <PreferencesProvider initialPreferences={{ ...PREFERENCES, ...overrides }}>
+        <SettingsPage />
+        <LocationProbe />
+      </PreferencesProvider>
+    </MemoryRouter>,
   )
 
   return screen.findByRole('heading', { level: 1, name: 'Settings', exact: true })
@@ -306,6 +315,16 @@ describe('appearance preferences', () => {
 
     await act(async () => setMediaQueryMatches('(prefers-color-scheme: dark)', false))
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('light'))
+  })
+})
+
+describe('guided tour', () => {
+  it('opens the Dashboard and asks the shell to start the tour', async () => {
+    await renderSettings()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Take the tour' }))
+
+    expect(screen.getByTestId('location')).toHaveTextContent('/dashboard{"tour":true}')
   })
 })
 

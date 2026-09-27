@@ -251,7 +251,7 @@ export function NotesPage() {
           title={notesTitle}
           titleId="notes-title"
         />
-        <Button onPress={() => void handleCreate()}>
+        <Button data-tour="notes" onPress={() => void handleCreate()}>
           <HugeiconsIcon aria-hidden="true" icon={PlusSignIcon} size={18} />
           New Note
         </Button>

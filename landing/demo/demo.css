@@ -1,0 +1,4 @@
+@import "../../src/styles/globals.css";
+
+/* The landing build is rooted in landing/, so Tailwind has to be pointed at the app sources. */
+@source "../../src";

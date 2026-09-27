@@ -7,6 +7,6 @@
       "@testing-library/react": ["./test-types/testing-library-react.d.ts"]
     }
   },
-  "include": ["src", "test-types", "vite.config.ts"],
+  "include": ["src", "test-types", "vite.config.ts", "landing", "vite.landing.config.ts"],
   "exclude": []
 }

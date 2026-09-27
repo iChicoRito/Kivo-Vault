@@ -9,7 +9,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "preview": "vite preview",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "landing:dev": "vite --config vite.landing.config.ts",
+    "landing:build": "vite build --config vite.landing.config.ts",
+    "landing:preview": "vite preview --config vite.landing.config.ts"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",

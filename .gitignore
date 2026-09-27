@@ -7,3 +7,4 @@ tasks/
 obsidian/system-analyzer/
 src-tauri/target/
 src-tauri/gen/
+dist-landing/

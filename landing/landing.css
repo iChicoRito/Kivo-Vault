@@ -1,0 +1,306 @@
+/* The app's own stylesheet, so reused Kivo components look exactly as they do in the app. */
+@import "../src/styles/globals.css";
+
+@source "../landing";
+@source "../src";
+
+@layer base {
+  /* Footer links jump to headings; keep them clear of the sticky top bar. */
+  [id] {
+    scroll-margin-top: 5rem;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    color-scheme: dark;
+  }
+
+  html[data-theme="light"] {
+    color-scheme: light;
+  }
+
+  body {
+    min-height: 100dvh;
+    margin: 0;
+    background: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 35%, transparent);
+    color: var(--foreground);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--foreground) 22%, transparent) transparent;
+  }
+}
+
+/*
+ * The one authored moment: the two halves of the Kivo mark slide in from
+ * either side and lock together, the same entrance the app's onboarding plays.
+ */
+.kivo-logo-intro-left,
+.kivo-logo-intro-right {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.kivo-mark-hero .kivo-logo-intro-left {
+  animation: kivo-mark-left 1.1s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.kivo-mark-hero .kivo-logo-intro-right {
+  animation: kivo-mark-right 1.1s cubic-bezier(0.16, 1, 0.3, 1) 120ms both;
+}
+
+@keyframes kivo-mark-left {
+  from {
+    opacity: 0;
+    transform: translateX(-70px) rotate(-8deg);
+    filter: blur(6px);
+  }
+}
+
+@keyframes kivo-mark-right {
+  from {
+    opacity: 0;
+    transform: translateX(70px) rotate(8deg);
+    filter: blur(6px);
+  }
+}
+
+/* The demo window rises into place once, after the mark lands. */
+.kivo-demo-window {
+  animation: kivo-demo-window 900ms cubic-bezier(0.16, 1, 0.3, 1) 450ms both;
+}
+
+@keyframes kivo-demo-window {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.985);
+  }
+}
+
+/* After the halves land, the mark gives the app's small snap and then floats. */
+.kivo-mark-hero {
+  transform-origin: center;
+  animation:
+    kivo-mark-snap 600ms cubic-bezier(0.34, 1.56, 0.64, 1) 950ms,
+    kivo-mark-float 3.2s cubic-bezier(0.45, 0, 0.55, 1) 1550ms infinite alternate;
+}
+
+@keyframes kivo-mark-snap {
+  40% {
+    transform: scale(1.06);
+  }
+}
+
+@keyframes kivo-mark-float {
+  to {
+    transform: translateY(-6px);
+  }
+}
+
+/* The dot field fades out downward so it never ends on a hard edge. */
+.kivo-hero-dots {
+  mask-image: linear-gradient(to bottom, black 0%, black 35%, transparent 100%);
+}
+
+/* The download block follows the text in, once the words have started. */
+.kivo-rise {
+  animation: kivo-rise 700ms cubic-bezier(0.16, 1, 0.3, 1) 600ms both;
+}
+
+@keyframes kivo-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+/*
+ * Scroll-linked reveals. Browsers without scroll timelines skip the whole block
+ * and show the content as is.
+ */
+@supports (animation-timeline: view()) {
+  .kivo-reveal {
+    animation: kivo-reveal linear both;
+    animation-timeline: view();
+    animation-range: entry 0% entry 70%;
+  }
+
+  @keyframes kivo-reveal {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+      filter: blur(4px);
+    }
+  }
+}
+
+/*
+ * Feature bento backgrounds. Each loops slowly behind its card text; the
+ * reduced-motion rule below freezes them in their resting state.
+ */
+.kivo-fade-bottom {
+  mask-image: linear-gradient(to bottom, black 25%, transparent 62%);
+}
+
+.kivo-marquee {
+  width: max-content;
+  will-change: transform;
+  animation: kivo-marquee 40s linear infinite;
+}
+
+.kivo-marquee-reverse {
+  animation-direction: reverse;
+}
+
+.group:hover .kivo-marquee,
+.group:hover .kivo-marquee-vertical {
+  will-change: transform;
+  animation-play-state: paused;
+}
+
+@keyframes kivo-marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.kivo-marquee-vertical {
+  will-change: transform;
+  animation: kivo-marquee-vertical 24s linear infinite;
+}
+
+@keyframes kivo-marquee-vertical {
+  to {
+    transform: translateY(-50%);
+  }
+}
+
+/* The query types itself, the caret blinks, then the results drop in. */
+.kivo-typing {
+  display: inline-block;
+  overflow: hidden;
+  white-space: nowrap;
+  border-right: 2px solid currentColor;
+  width: 5ch;
+  animation:
+    kivo-typing 6s steps(5, end) infinite,
+    kivo-caret 0.8s step-end infinite;
+}
+
+@keyframes kivo-typing {
+  0% {
+    width: 0;
+  }
+  25%,
+  90% {
+    width: 5ch;
+  }
+  100% {
+    width: 0;
+  }
+}
+
+@keyframes kivo-caret {
+  50% {
+    border-color: transparent;
+  }
+}
+
+.kivo-result {
+  animation: kivo-result 6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  animation-delay: calc(1.6s + var(--i) * 0.18s);
+  opacity: 0;
+}
+
+@keyframes kivo-result {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  10%,
+  60% {
+    opacity: 1;
+    transform: none;
+  }
+  75%,
+  100% {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+}
+
+/* The notes preview leans back like a desk of cards, so the rows read with depth. */
+.kivo-notes-tilt {
+  padding-top: 1rem;
+  transform: perspective(1000px) rotateX(20deg) rotateZ(-5deg) scale(1.15) translateY(-8%);
+  transform-origin: top center;
+}
+
+.kivo-caret {
+  animation: kivo-caret 0.9s step-end infinite;
+  background: currentColor;
+}
+
+/* Rows arrive one after another, hold, then leave so the loop can start again. */
+.kivo-stagger {
+  animation: kivo-result 7s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  animation-delay: calc(var(--i) * 0.25s);
+  opacity: 0;
+}
+
+/* A brightness wave rolls across the heatmap's weeks. */
+.kivo-heatmap-preview [role="img"] > div > * {
+  animation: kivo-heat-wave 3.6s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * 90ms);
+}
+
+/* Opacity and transform only: they run on the compositor, where a filter on
+   every one of the 182 cells would repaint the card each frame. */
+@keyframes kivo-heat-wave {
+  0%,
+  60%,
+  100% {
+    opacity: 0.7;
+    transform: none;
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1.14);
+  }
+}
+
+/* Off screen, the feature grid's CSS loops hold still. */
+.kivo-paused *,
+.kivo-paused *::before,
+.kivo-paused *::after {
+  animation-play-state: paused !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kivo-stagger,
+  .kivo-result {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

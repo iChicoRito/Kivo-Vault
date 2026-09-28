@@ -55,6 +55,7 @@ pub fn run() {
             encryption::change_master_password,
             backup::pick_backup_destination,
             backup::create_backup,
+            backup::create_backup_now,
             backup::pick_backup_source,
             backup::inspect_backup,
             backup::restore_backup,

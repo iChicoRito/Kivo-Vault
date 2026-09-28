@@ -15,14 +15,19 @@ it('requires a master password before encryption, warns about external temp file
   expect(screen.getByText(/temp/i)).toBeInTheDocument()
 })
 
-it('backs up only after destination selection and leaves automatic backup off', async () => {
+it('backs up in one click, or into a picked folder, and leaves automatic backup off', async () => {
   getTauriInvoke().mockImplementation((command: string) => Promise.resolve(command === 'pick_backup_destination' ? 'C:/safe' : {
-    path: 'C:/safe/Kivo', createdAt: '2026-09-24', appVersion: '0.1', schemaVersion: 12,
+    path: 'C:/safe/Kivo Backup', createdAt: '2026-09-24', appVersion: '0.1', schemaVersion: 12,
     itemCount: 2, fileCount: 1, valid: true, problems: [],
   }))
   render(<BackupSettings />)
-  fireEvent.click(screen.getByRole('button', { name: 'Create backup' }))
-  await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('create_backup', { destination: 'C:/safe', replace: false }))
+  fireEvent.click(screen.getByRole('button', { name: 'Back up now' }))
+  await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('create_backup_now', { folder: null }))
+  expect(getTauriInvoke()).not.toHaveBeenCalledWith('pick_backup_destination')
+  expect(await screen.findByText(/This backup looks good/)).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Back up to folder...' }))
+  await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('create_backup_now', { folder: 'C:/safe' }))
   expect(screen.getByText(/does not make backups automatically/i)).toBeInTheDocument()
 })
 

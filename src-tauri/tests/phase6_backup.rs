@@ -9,7 +9,7 @@ mod encryption;
 #[path = "../src/security.rs"]
 mod security;
 
-use backup::{create_backup_at, inspect_backup_at, restore_backup_at};
+use backup::{create_backup_at, create_backup_in, inspect_backup_at, restore_backup_at};
 use rusqlite::Connection;
 use std::{
     fs,
@@ -211,4 +211,25 @@ fn a_phase_seven_vault_can_still_be_backed_up_and_inspected() {
     let info = create_backup_at(&conn, &files, &backup_path, false).unwrap();
     assert_eq!(info.schema_version, 13);
     assert!(inspect_backup_at(&backup_path).valid);
+}
+
+#[test]
+fn backup_into_an_existing_folder_makes_a_new_dated_folder_and_keeps_what_is_there() {
+    let w = Workspace::new();
+    let db = w.path("app/kivo.db");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let files = w.path("app/files");
+    let conn = seed(&db, &files, "original");
+    let parent = w.path("Documents");
+    fs::create_dir_all(&parent).unwrap();
+    fs::write(parent.join("keep.txt"), b"mine").unwrap();
+
+    let first = create_backup_in(&conn, &files, &parent).unwrap();
+    let second = create_backup_in(&conn, &files, &parent).unwrap();
+
+    assert!(first.valid && second.valid, "{:?} {:?}", first.problems, second.problems);
+    assert_ne!(first.path, second.path);
+    assert!(Path::new(&first.path).starts_with(&parent));
+    assert!(Path::new(&first.path).file_name().unwrap().to_string_lossy().starts_with("Kivo Backup "));
+    assert_eq!(fs::read(parent.join("keep.txt")).unwrap(), b"mine");
 }

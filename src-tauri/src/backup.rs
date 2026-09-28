@@ -355,6 +355,28 @@ pub fn create_backup_at(
     result
 }
 
+/// Saves a new backup inside `parent`, in its own folder named after the local
+/// date and time, so a backup never replaces anything already there.
+pub fn create_backup_in(
+    connection: &Connection,
+    files_dir: &Path,
+    parent: &Path,
+) -> Result<BackupInfo, String> {
+    let stamp: String = connection
+        .query_row("SELECT strftime('%Y-%m-%d %H-%M-%S', 'now', 'localtime')", [], |row| {
+            row.get(0)
+        })
+        .map_err(|e| e.to_string())?;
+    let base = format!("Kivo Backup {stamp}");
+    let mut destination = parent.join(&base);
+    let mut copy = 2;
+    while destination.exists() {
+        destination = parent.join(format!("{base} ({copy})"));
+        copy += 1;
+    }
+    create_backup_at(connection, files_dir, &destination, false)
+}
+
 pub fn inspect_backup_at(path: &Path) -> BackupInfo {
     let mut info = BackupInfo {
         path: path.display().to_string(),
@@ -655,6 +677,28 @@ pub fn create_backup(
         Path::new(&destination),
         replace,
     )
+}
+
+/// One-click backup. With no folder it goes to "Kivo Backups" in Documents.
+#[tauri::command]
+pub fn create_backup_now(
+    folder: Option<String>,
+    app: AppHandle,
+    state: State<'_, DatabaseState>,
+) -> Result<BackupInfo, String> {
+    use tauri::Manager;
+
+    let parent = match folder {
+        Some(folder) => PathBuf::from(folder),
+        None => app
+            .path()
+            .document_dir()
+            .map_err(|e| format!("Could not find the Documents folder: {e}"))?
+            .join("Kivo Backups"),
+    };
+    let guard = state.require_connection()?;
+    let connection = guard.as_ref().expect("checked above");
+    create_backup_in(connection, state.files_dir(), &parent)
 }
 
 #[tauri::command]

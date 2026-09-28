@@ -57,7 +57,7 @@ export function ItemCard({
 
   return (
     <div
-      className={`kivo-item-card relative rounded-3xl border bg-surface transition-[background-color,scale,border-color] duration-300 ease-out hover:z-10 hover:scale-[1.02] hover:bg-surface-hover ${isSelected ? 'border-accent' : 'border-default'}`}
+      className={`kivo-item-card relative rounded-3xl border bg-surface transition-[background-color,scale,border-color] duration-300 ease-out hover:z-10 hover:scale-[1.02] hover:bg-surface-hover ${isSelected ? 'border-accent/40' : 'border-default'}`}
       onContextMenu={(event) => {
         event.preventDefault()
 

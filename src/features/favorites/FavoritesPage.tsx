@@ -2,11 +2,14 @@ import { useEffect, useState } from 'react'
 import {
   Alert,
   Button,
+  EmptyState,
   ListBox,
   Modal,
   Select,
   Typography,
 } from '@heroui/react'
+import { StarIcon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 
 import PageHeader from '../../app/PageHeader'
 import { CollectionSelect } from '../../components/items/dialogs'
@@ -22,6 +25,7 @@ import {
 } from '../../data/items'
 import { notifyError, notifySuccess, trashManyWithUndo } from '../../lib/feedback'
 import { useVaultChanged } from '../../lib/useVaultChanged'
+import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { ItemDetailsDialog } from '../items/ItemDetailsDialog'
 
 type LoadState = 'loading' | 'ready' | 'error'
@@ -183,8 +187,33 @@ export function FavoritesPage() {
         </Alert>
       ) : null}
 
-      {loadState === 'ready' ? (
-        <>
+      {loadState === 'ready' && items.length === 0 && kind === 'all' ? (
+        <EmptyState
+          aria-labelledby="favorites-empty-title"
+          className="flex min-h-[32rem] flex-col items-center justify-center gap-5 rounded-3xl border border-dashed border-default px-6 py-16 text-center"
+        >
+          <span
+            aria-hidden="true"
+            className="flex size-14 items-center justify-center rounded-full bg-background-tertiary text-muted"
+          >
+            <HugeiconsIcon icon={StarIcon} size={24} />
+          </span>
+          <div className="grid max-w-lg gap-2">
+            {/* An h2 under the page's h1, styled like the h3 titles of the other empty states. */}
+            <h2 className="typography typography--h3 typography--align-center" id="favorites-empty-title">
+              No favorites yet.
+            </h2>
+            <Typography align="center" color="muted" type="body">
+              Items you mark as favorites will appear here.
+            </Typography>
+          </div>
+        </EmptyState>
+      ) : null}
+
+      {loadState === 'ready' && (items.length > 0 || kind !== 'all') ? (
+        <div className="flex gap-4">
+          <CollectionFolderPanel />
+          <div className="grid min-w-0 flex-1 content-start gap-5">
           <SelectionBar
             actionLabel="Move to Trash"
             confirmTrash
@@ -193,8 +222,9 @@ export function FavoritesPage() {
             onAction={(ids) => void trashSelected(ids)}
           />
           <ItemTable
+          draggable
           selection={selection}
-          emptyMessage="No favorites yet. Items marked as favorites will appear here."
+          emptyMessage="No favorites of this type."
           items={pagedItems}
           page={currentPage}
           pageSize={PAGE_SIZE}
@@ -206,7 +236,8 @@ export function FavoritesPage() {
             void handleToggleFavorite(id, next)
           }}
         />
-        </>
+          </div>
+        </div>
       ) : null}
 
       <Modal

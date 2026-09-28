@@ -82,7 +82,7 @@ function dragOver(collectionId: string | null) {
 async function dropItem(itemId: string, collectionId: string) {
   await act(async () => {
     window.dispatchEvent(
-      new CustomEvent(ITEM_DROPPED_EVENT, { detail: { itemId, collectionId } }),
+      new CustomEvent(ITEM_DROPPED_EVENT, { detail: { itemIds: [itemId], collectionId } }),
     )
   })
 }

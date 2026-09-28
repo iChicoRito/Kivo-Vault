@@ -23,6 +23,7 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react'
 
 import type { ItemKind, ItemSummary } from '../../data/items'
+import { ITEM_DRAG_ID_ATTRIBUTE, startItemDrag } from '../../features/collections/itemDrag'
 import { SelectMark } from './ItemCard'
 import { ListScrollArea } from './ListScrollArea'
 import type { Selection } from './useSelection'
@@ -42,6 +43,8 @@ export type ItemTableProps = {
   emptyMessage?: string
   /** Adds a Select entry to the row menu and checkboxes while selecting. */
   selection?: Selection
+  /** Lets rows be dragged onto the collection panel, with every selected row riding along. */
+  draggable?: boolean
 }
 
 const KIND_LABELS: Record<ItemKind, string> = {
@@ -93,6 +96,7 @@ export function ItemTable({
   onDeletePermanently,
   emptyMessage = 'No items yet.',
   selection,
+  draggable = false,
 }: ItemTableProps) {
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize))
   const start = totalItems === 0 ? 0 : (page - 1) * pageSize + 1
@@ -126,6 +130,19 @@ export function ItemTable({
             {items.map((item) => (
               <li
                 key={item.id}
+                {...(draggable ? { [ITEM_DRAG_ID_ATTRIBUTE]: item.id } : {})}
+                className={draggable ? 'select-none' : undefined}
+                onPointerDown={
+                  draggable
+                    ? (event) =>
+                        startItemDrag(
+                          event,
+                          selection?.isSelected(item.id)
+                            ? selection.selectedIn(items.map((entry) => entry.id))
+                            : [item.id],
+                        )
+                    : undefined
+                }
                 onContextMenu={(event) => {
                   event.preventDefault()
 
@@ -151,7 +168,7 @@ export function ItemTable({
                 }}
               >
                 <div
-                  className={`kivo-item-card relative rounded-3xl border bg-surface transition-[background-color,scale,border-color] duration-300 ease-out hover:z-10 hover:scale-[1.02] hover:bg-surface-hover ${selection?.isSelected(item.id) ? 'border-accent' : 'border-default'}`}
+                  className={`kivo-item-card relative rounded-3xl border bg-surface transition-[background-color,scale,border-color] duration-300 ease-out hover:z-10 hover:scale-[1.02] hover:bg-surface-hover ${selection?.isSelected(item.id) ? 'border-accent/40' : 'border-default'}`}
                 >
                   <button
                     aria-label={item.title}

@@ -107,7 +107,7 @@ export function CollectionItemView({
       <button
         aria-label={item.title}
         aria-pressed={isSelecting ? isSelected : undefined}
-        className={`kivo-item-card relative flex h-full w-full cursor-pointer flex-col gap-3 rounded-3xl border bg-surface p-4 text-left transition-[background-color,scale,border-color] duration-300 ease-out hover:z-10 hover:scale-[1.02] hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus ${isSelected ? 'border-accent' : 'border-default'}`}
+        className={`kivo-item-card relative flex h-full w-full cursor-pointer flex-col gap-3 rounded-3xl border bg-surface p-4 text-left transition-[background-color,scale,border-color] duration-300 ease-out hover:z-10 hover:scale-[1.02] hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus ${isSelected ? 'border-accent/40' : 'border-default'}`}
         type="button"
         onClick={isSelecting ? onSelect : onOpen}
       >

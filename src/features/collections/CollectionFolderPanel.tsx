@@ -11,6 +11,7 @@ import {
   Delete02Icon,
   EyeIcon,
   FolderOpenIcon,
+  FolderRemoveIcon,
   Layers01Icon,
   SidebarLeftIcon,
   StarIcon,
@@ -19,7 +20,11 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react'
 import { useNavigate } from 'react-router-dom'
 
-import { BranchedMenu, type BranchedMenuChild, type BranchedMenuItem } from '../../components/ui/BranchedMenu'
+import {
+  BranchedMenu,
+  type BranchedMenuChild,
+  type BranchedMenuItem,
+} from '../../components/ui/BranchedMenu'
 import { CollectionSelect, ConfirmDialog } from '../../components/items/dialogs'
 import { deleteCollection, listCollections, type Collection } from '../../data/collections'
 import { VAULT_CHANGED_EVENT } from '../../data/events'
@@ -55,14 +60,15 @@ const MENU_TRUNK = 6
 const MENU_ROW_HEIGHT = 32
 const MENU_WIDTH = 288
 
-type ItemsEntry = { status: 'loading' | 'ready' | 'error'; items: ItemSummary[] }
+type ItemsEntry = {
+  status: 'loading' | 'ready' | 'error'
+  items: ItemSummary[]
+}
 
 type Notice = { tone: 'ok' | 'error'; text: string }
 
 /** What the single row menu is open on: a folder head or one item row. */
-type MenuTarget =
-  | { kind: 'folder'; collection: Collection }
-  | { kind: 'item'; item: ItemSummary }
+type MenuTarget = { kind: 'folder'; collection: Collection } | { kind: 'item'; item: ItemSummary }
 
 function collectionIcon(icon: string | null) {
   return (icon ? ICON_COMPONENTS[icon] : undefined) ?? FolderOpenIcon
@@ -80,9 +86,21 @@ function itemTitle(item: ItemSummary) {
  * open collection load. */
 function loadingChildren(): BranchedMenuChild[] {
   return [
-    { value: 'loading-1', disabled: true, label: <span aria-hidden="true" className="skeleton skeleton--shimmer block h-3 w-24" /> },
-    { value: 'loading-2', disabled: true, label: <span aria-hidden="true" className="skeleton skeleton--shimmer block h-3 w-20" /> },
-    { value: 'loading-3', disabled: true, label: <span aria-hidden="true" className="skeleton skeleton--shimmer block h-3 w-28" /> },
+    {
+      value: 'loading-1',
+      disabled: true,
+      label: <span aria-hidden="true" className="skeleton skeleton--shimmer block h-3 w-24" />,
+    },
+    {
+      value: 'loading-2',
+      disabled: true,
+      label: <span aria-hidden="true" className="skeleton skeleton--shimmer block h-3 w-20" />,
+    },
+    {
+      value: 'loading-3',
+      disabled: true,
+      label: <span aria-hidden="true" className="skeleton skeleton--shimmer block h-3 w-28" />,
+    },
   ]
 }
 
@@ -149,10 +167,16 @@ export function CollectionFolderPanel() {
 
     listItems({ collectionId })
       .then((items) => {
-        setItemsById((current) => ({ ...current, [collectionId]: { status: 'ready', items } }))
+        setItemsById((current) => ({
+          ...current,
+          [collectionId]: { status: 'ready', items },
+        }))
       })
       .catch(() => {
-        setItemsById((current) => ({ ...current, [collectionId]: { status: 'error', items: [] } }))
+        setItemsById((current) => ({
+          ...current,
+          [collectionId]: { status: 'error', items: [] },
+        }))
       })
       .finally(() => {
         inFlight.current.delete(collectionId)
@@ -210,13 +234,16 @@ export function CollectionFolderPanel() {
       setNotice(null)
 
       try {
-        await moveItemsToCollection([detail.itemId], detail.collectionId)
+        await moveItemsToCollection(detail.itemIds, detail.collectionId)
       } catch {
         setNotice({ tone: 'error', text: MOVE_ERROR })
         return
       }
 
-      setNotice({ tone: 'ok', text: target ? `Moved to ${target.name}` : 'Item moved' })
+      setNotice({
+        tone: 'ok',
+        text: target ? `Moved to ${target.name}` : 'Item moved',
+      })
 
       try {
         setCollections(await listCollections())
@@ -290,7 +317,9 @@ export function CollectionFolderPanel() {
     if (!collection) return
 
     if (menuIsOpen) {
-      setOpenIds((current) => (current.includes(collection.id) ? current : [...current, collection.id]))
+      setOpenIds((current) =>
+        current.includes(collection.id) ? current : [...current, collection.id],
+      )
       loadItems(collection.id)
       return
     }
@@ -384,11 +413,7 @@ export function CollectionFolderPanel() {
 
     const bounds = panelRef.current?.getBoundingClientRect()
     const rect = row.getBoundingClientRect()
-    openMenuAt(
-      target,
-      rect.left - (bounds?.left ?? 0) + 16,
-      rect.bottom - (bounds?.top ?? 0),
-    )
+    openMenuAt(target, rect.left - (bounds?.left ?? 0) + 16, rect.bottom - (bounds?.top ?? 0))
   }
 
   function handleMenuAction(key: string) {
@@ -409,7 +434,8 @@ export function CollectionFolderPanel() {
     else if (key === 'move') {
       setMoveCollectionId(item.collectionId)
       setMoveTarget(item)
-    } else if (key === 'trash') void trashWithUndo({ ids: [item.id], label: 'Item' })
+    } else if (key === 'remove') void handleRemove(item)
+    else if (key === 'trash') void trashWithUndo({ ids: [item.id], label: 'Item' })
   }
 
   async function handleMove() {
@@ -421,6 +447,15 @@ export function CollectionFolderPanel() {
       notifySuccess('Item moved to collection')
     } catch {
       notifyError('Kivo could not move this item. Try again.')
+    }
+  }
+
+  async function handleRemove(item: ItemSummary) {
+    try {
+      await moveItemsToCollection([item.id], null)
+      notifySuccess('Item removed from collection')
+    } catch {
+      notifyError('Kivo could not remove this item from the collection. Try again.')
     }
   }
 
@@ -602,16 +637,15 @@ export function CollectionFolderPanel() {
                   <HugeiconsIcon aria-hidden="true" icon={FolderOpenIcon} size={16} />
                   <Label>Move to Collection…</Label>
                 </Dropdown.Item>
+                <Dropdown.Item id="remove" key="remove" textValue="Remove from Collection">
+                  <HugeiconsIcon aria-hidden="true" icon={FolderRemoveIcon} size={16} />
+                  <Label>Remove from Collection</Label>
+                </Dropdown.Item>
                 <Dropdown.Section
                   aria-label="Danger zone"
                   className="mt-1 border-t border-separator pt-1"
                 >
-                  <Dropdown.Item
-                    id="trash"
-                    key="trash"
-                    textValue="Move to Trash"
-                    variant="danger"
-                  >
+                  <Dropdown.Item id="trash" key="trash" textValue="Move to Trash" variant="danger">
                     <HugeiconsIcon
                       aria-hidden="true"
                       className="text-danger"

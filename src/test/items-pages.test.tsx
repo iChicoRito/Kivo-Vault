@@ -41,6 +41,7 @@ const feedbackMock = vi.hoisted(() => ({
   trashManyWithUndo: vi.fn().mockResolvedValue(true),
 }))
 
+vi.mock('../features/collections/CollectionFolderPanel', () => ({ CollectionFolderPanel: () => null }))
 vi.mock('../data/items', () => itemsMock)
 vi.mock('../data/collections', () => collectionsMock)
 vi.mock('../data/tags', () => tagsMock)
@@ -686,7 +687,8 @@ describe('ItemDetailsDialog', () => {
     const { onClose, onChanged } = renderDetails('note-1')
     await screen.findByRole('textbox', { name: 'Title' })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Move to trash' }))
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Move to trash' }))
 
     const heading = await screen.findByRole('heading', { name: 'Move this item to Trash?' })
     const confirmDialog = heading.closest('[role="dialog"]') as HTMLElement

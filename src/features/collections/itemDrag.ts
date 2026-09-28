@@ -21,6 +21,13 @@ export const ITEM_DRAG_GHOST_OVER_CLASS = 'kivo-drag-ghost-over'
  * collection, so neither animation drags the follow behind the pointer. */
 const ITEM_DRAG_GHOST_SCALE_CLASS = 'kivo-drag-ghost-scale'
 
+/** Every draggable card carries its item id here, so a multi-item drag can find
+ * the other selected cards and fly them into the floating stack. */
+export const ITEM_DRAG_ID_ATTRIBUTE = 'data-item-drag-id'
+
+/** How long the other selected cards take to fly into the floating stack. */
+const MERGE_MS = 280
+
 /** How far the pointer travels before a press turns into a card drag. */
 const DRAG_THRESHOLD_PX = 6
 
@@ -28,10 +35,10 @@ const DRAG_THRESHOLD_PX = 6
 const GHOST_FADE_MS = 160
 
 export type ItemDragOverDetail = { collectionId: string | null }
-export type ItemDropDetail = { itemId: string; collectionId: string }
+export type ItemDropDetail = { itemIds: string[]; collectionId: string }
 
 type DragState = {
-  itemId: string
+  itemIds: string[]
   source: HTMLElement
   ghost: HTMLElement | null
   startX: number
@@ -40,6 +47,7 @@ type DragState = {
   offsetY: number
   targetId: string | null
   started: boolean
+  others: HTMLElement[]
 }
 
 let drag: DragState | null = null
@@ -79,6 +87,39 @@ function moveGhost(state: DragState, x: number, y: number) {
   state.ghost.style.setProperty('--kivo-drag-y', `${y - state.offsetY}px`)
 }
 
+/** The other selected cards on screen fly from their place into the floating
+ * card, so the selection reads as gathering under the pointer. */
+function mergeOthers(state: DragState, grabbed: DOMRect) {
+  for (const id of state.itemIds) {
+    const card = document.querySelector<HTMLElement>(
+      `[${ITEM_DRAG_ID_ATTRIBUTE}="${CSS.escape(id)}"]`,
+    )
+    if (!card || card === state.source) continue
+
+    const rect = card.getBoundingClientRect()
+    const flyer = document.createElement('div')
+
+    flyer.classList.add('kivo-drag-flyer')
+    flyer.setAttribute('aria-hidden', 'true')
+    flyer.style.left = `${rect.left}px`
+    flyer.style.top = `${rect.top}px`
+    flyer.style.width = `${rect.width}px`
+    flyer.append(card.cloneNode(true))
+    document.body.append(flyer)
+
+    card.classList.add(ITEM_DRAG_SOURCE_CLASS)
+    state.others.push(card)
+
+    // Next frame, so the start position paints before the flight begins.
+    requestAnimationFrame(() => {
+      const target = state.ghost?.getBoundingClientRect() ?? grabbed
+      flyer.style.transform = `translate(${target.left - rect.left}px, ${target.top - rect.top}px) scale(0.9)`
+      flyer.style.opacity = '0'
+    })
+    window.setTimeout(() => flyer.remove(), MERGE_MS)
+  }
+}
+
 function startFloating(state: DragState, event: PointerEvent) {
   const rect = state.source.getBoundingClientRect()
   const ghost = document.createElement('div')
@@ -91,6 +132,23 @@ function startFloating(state: DragState, event: PointerEvent) {
 
   scaler.classList.add(ITEM_DRAG_GHOST_SCALE_CLASS)
   scaler.append(state.source.cloneNode(true))
+
+  // A multi-item drag floats as a stack: up to two tilted copies sit behind the
+  // grabbed card, and a badge shows how many items ride along.
+  if (state.itemIds.length > 1) {
+    for (const tilt of [-4, 3].slice(0, state.itemIds.length - 1)) {
+      const layer = document.createElement('div')
+      layer.classList.add('kivo-drag-stack')
+      layer.style.setProperty('--kivo-drag-tilt', `${tilt}deg`)
+      layer.append(state.source.cloneNode(true))
+      scaler.prepend(layer)
+    }
+
+    const count = document.createElement('span')
+    count.classList.add('kivo-drag-count')
+    count.textContent = String(state.itemIds.length)
+    scaler.append(count)
+  }
 
   ghost.append(scaler)
   document.body.append(ghost)
@@ -107,6 +165,7 @@ function startFloating(state: DragState, event: PointerEvent) {
   document.body.classList.add('kivo-dragging')
 
   moveGhost(state, event.clientX, event.clientY)
+  mergeOthers(state, rect)
   window.dispatchEvent(new Event(ITEM_DRAG_START_EVENT))
 }
 
@@ -130,6 +189,7 @@ function endDrag(state: DragState, dropped: boolean) {
   window.removeEventListener('blur', handleCancel)
 
   state.source.classList.remove(ITEM_DRAG_SOURCE_CLASS)
+  for (const card of state.others) card.classList.remove(ITEM_DRAG_SOURCE_CLASS)
   document.body.classList.remove('kivo-dragging')
 
   if (!state.started) return
@@ -143,7 +203,7 @@ function endDrag(state: DragState, dropped: boolean) {
   if (dropped && state.targetId) {
     window.dispatchEvent(
       new CustomEvent<ItemDropDetail>(ITEM_DROPPED_EVENT, {
-        detail: { itemId: state.itemId, collectionId: state.targetId },
+        detail: { itemIds: state.itemIds, collectionId: state.targetId },
       }),
     )
   }
@@ -201,13 +261,14 @@ function handleCancel() {
 /**
  * Card drags run on pointer events rather than HTML5 drag and drop, so the card
  * itself can float with the pointer: a full-strength copy follows it while the
- * card in the list dims. Call it from the card's `pointerdown`.
+ * card in the list dims. Call it from the card's `pointerdown`. Pass every
+ * selected id to drag them together.
  */
-export function startItemDrag(event: ReactPointerEvent<HTMLElement>, itemId: string) {
+export function startItemDrag(event: ReactPointerEvent<HTMLElement>, itemIds: string[]) {
   if (drag || event.button !== 0) return
 
   drag = {
-    itemId,
+    itemIds,
     source: event.currentTarget,
     ghost: null,
     startX: event.clientX,
@@ -216,6 +277,7 @@ export function startItemDrag(event: ReactPointerEvent<HTMLElement>, itemId: str
     offsetY: 0,
     targetId: null,
     started: false,
+    others: [],
   }
 
   window.addEventListener('pointermove', handlePointerMove)

@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Chip,
+  Dropdown,
   Input,
   Label,
   Modal,
@@ -12,6 +13,8 @@ import {
   TextField,
   Typography,
 } from '@heroui/react'
+import { ArrowDown01Icon, Delete02Icon, FileExportIcon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 
 import {
   CollectionSelect,
@@ -274,7 +277,7 @@ export function ItemDetailsDialog({ itemId, onClose, onChanged }: ItemDetailsDia
     >
       <Modal.Backdrop>
         <Modal.Container>
-          <Modal.Dialog>
+          <Modal.Dialog className="max-w-3xl">
             <Modal.Header>
               <Modal.Heading>Item details</Modal.Heading>
             </Modal.Header>
@@ -358,14 +361,6 @@ export function ItemDetailsDialog({ itemId, onClose, onChanged }: ItemDetailsDia
                       <Label>Description</Label>
                       <TextArea fullWidth variant="secondary" />
                     </TextField>
-
-                    <Button
-                      className="justify-self-start"
-                      isDisabled={!title.trim()}
-                      onPress={() => void handleSaveDetails()}
-                    >
-                      Save changes
-                    </Button>
                   </div>
 
                   {saveError ? (
@@ -468,18 +463,47 @@ export function ItemDetailsDialog({ itemId, onClose, onChanged }: ItemDetailsDia
               ) : null}
             </Modal.Body>
 
-            <Modal.Footer>
-              {loadState === 'ready' && item ? <Button variant="secondary" onPress={() => {
-                void (async () => { try { const path = await pickSaveFile(`${item.title.replace(/[\\/:*?"<>|]/g, '_')}.json`); if (path) { await exportItemsJson([item.id], path); notifySuccess('Item exported as JSON') } } catch { notifyError('Could not export item. Try again.') } })()
-              }}>Export as JSON</Button> : null}
-              {loadState === 'ready' && item ? (
-                <Button variant="danger" onPress={() => setConfirmOpen(true)}>
-                  Move to trash
+            {/* Item actions sit on the left, closing and saving on the right. */}
+            <Modal.Footer className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-2">
+                {loadState === 'ready' && item ? (
+                  <Dropdown>
+                    <Button variant="secondary">
+                      More actions
+                      <HugeiconsIcon aria-hidden="true" icon={ArrowDown01Icon} size={16} />
+                    </Button>
+                    <Dropdown.Popover>
+                      <Dropdown.Menu
+                        onAction={(key) => {
+                          if (key === 'trash') setConfirmOpen(true)
+                          else if (key === 'export') {
+                            void (async () => { try { const path = await pickSaveFile(`${item.title.replace(/[\\/:*?"<>|]/g, '_')}.json`); if (path) { await exportItemsJson([item.id], path); notifySuccess('Item exported as JSON') } } catch { notifyError('Could not export item. Try again.') } })()
+                          }
+                        }}
+                      >
+                        <Dropdown.Item id="export" textValue="Export as JSON">
+                          <HugeiconsIcon aria-hidden="true" icon={FileExportIcon} size={16} />
+                          <Label>Export as JSON</Label>
+                        </Dropdown.Item>
+                        <Dropdown.Item id="trash" textValue="Move to trash" variant="danger">
+                          <HugeiconsIcon aria-hidden="true" className="text-danger" icon={Delete02Icon} size={16} />
+                          <Label>Move to trash</Label>
+                        </Dropdown.Item>
+                      </Dropdown.Menu>
+                    </Dropdown.Popover>
+                  </Dropdown>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" onPress={onClose}>
+                  Close
                 </Button>
-              ) : null}
-              <Button variant="secondary" onPress={onClose}>
-                Close
-              </Button>
+                {loadState === 'ready' && item ? (
+                  <Button isDisabled={!title.trim()} onPress={() => void handleSaveDetails()}>
+                    Save changes
+                  </Button>
+                ) : null}
+              </div>
             </Modal.Footer>
           </Modal.Dialog>
         </Modal.Container>

@@ -46,11 +46,7 @@ import {
 } from '../../data/items'
 import { NoteGridCard } from './NoteGridCard'
 import { notePreview } from './noteContent'
-import {
-  NOTE_STATUS_BAR_CLASS,
-  NOTE_STATUS_CHIP_COLOR,
-  noteStatus,
-} from './noteStatus'
+import { NOTE_STATUS_BAR_CLASS, NOTE_STATUS_CHIP_COLOR, noteStatus } from './noteStatus'
 import { moduleRoutes } from '../modules/ModulePage'
 import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { startItemDrag } from '../collections/itemDrag'
@@ -114,7 +110,11 @@ function NotesLoadingSkeleton({ view }: { view: NoteView }) {
 
 type LoadState = 'loading' | 'ready' | 'error'
 
-type MoveState = { id: string; collectionId: string | null; initialCollectionId: string | null }
+type MoveState = {
+  id: string
+  collectionId: string | null
+  initialCollectionId: string | null
+}
 
 export function NotesPage() {
   const navigate = useNavigate()
@@ -246,11 +246,7 @@ export function NotesPage() {
   return (
     <section aria-labelledby="notes-title" className="grid gap-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <PageHeader
-          description={notesDescription}
-          title={notesTitle}
-          titleId="notes-title"
-        />
+        <PageHeader description={notesDescription} title={notesTitle} titleId="notes-title" />
         <Button data-tour="notes" onPress={() => void handleCreate()}>
           <HugeiconsIcon aria-hidden="true" icon={PlusSignIcon} size={18} />
           New Note
@@ -367,94 +363,127 @@ export function NotesPage() {
               />
             </div>
             <ListScrollArea>
-          <ul
-            className={
-              view === 'grid' ? 'grid gap-4 sm:grid-cols-2 xl:grid-cols-3' : 'grid gap-2'
-            }
-          >
-            {items.map((item) => {
-              const status = noteStatus(item)
+              <ul
+                className={
+                  view === 'grid' ? 'grid gap-4 sm:grid-cols-2 xl:grid-cols-3' : 'grid gap-2'
+                }
+              >
+                {items.map((item) => {
+                  const status = noteStatus(item)
 
-              const actions: ItemCardAction[] = [
-                {
-                  id: 'favorite',
-                  label: item.isFavorite ? 'Remove favorite' : 'Add to favorites',
-                  icon: item.isFavorite ? StarOffIcon : StarIcon,
-                },
-                {
-                  id: 'pin',
-                  label: item.isPinned ? 'Unpin' : 'Pin',
-                  icon: item.isPinned ? PinOffIcon : PinIcon,
-                },
-                { id: 'move', label: 'Move to collection', icon: FolderOpenIcon },
-                { id: 'trash', label: 'Move to trash', icon: Delete02Icon, danger: true },
-              ]
+                  const actions: ItemCardAction[] = [
+                    {
+                      id: 'favorite',
+                      label: item.isFavorite ? 'Remove favorite' : 'Add to favorites',
+                      icon: item.isFavorite ? StarOffIcon : StarIcon,
+                    },
+                    {
+                      id: 'pin',
+                      label: item.isPinned ? 'Unpin' : 'Pin',
+                      icon: item.isPinned ? PinOffIcon : PinIcon,
+                    },
+                    {
+                      id: 'move',
+                      label: 'Move to collection',
+                      icon: FolderOpenIcon,
+                    },
+                    {
+                      id: 'trash',
+                      label: 'Move to trash',
+                      icon: Delete02Icon,
+                      danger: true,
+                    },
+                  ]
 
-              if (view === 'grid') {
-                return (
-                  <li
-                    key={item.id}
-                    className="min-w-0 select-none"
-                    onPointerDown={(event) => startItemDrag(event, item.id)}
-                  >
-                    <NoteGridCard item={item} onOpen={() => navigate(`/notes/${item.id}`)} />
-                  </li>
-                )
-              }
+                  if (view === 'grid') {
+                    return (
+                      <li
+                        key={item.id}
+                        data-item-drag-id={item.id}
+                        className="min-w-0 select-none"
+                        onPointerDown={(event) =>
+                          startItemDrag(
+                            event,
+                            selection.isSelected(item.id)
+                              ? selection.selectedIn(items.map((entry) => entry.id))
+                              : [item.id],
+                          )
+                        }
+                      >
+                        <NoteGridCard item={item} onOpen={() => navigate(`/notes/${item.id}`)} />
+                      </li>
+                    )
+                  }
 
-              return (
-                <li
-                  key={item.id}
-                  className="min-w-0 select-none"
-                  onPointerDown={(event) => startItemDrag(event, item.id)}
-                >
-                  <ItemCard
-                    actions={actions}
-                    isSelected={selection.isSelected(item.id)}
-                    isSelecting={selection.isActive}
-                    onSelect={() => selection.pick(item.id)}
-                    chips={
-                      status === 'plain' ? (
-                        <Chip size="sm" variant="soft">
-                          Notes
-                        </Chip>
-                      ) : (
-                        <>
-                          {item.isPinned ? (
-                            <Chip color={NOTE_STATUS_CHIP_COLOR[status]} size="sm" variant="soft">
-                              Pinned
+                  return (
+                    <li
+                      key={item.id}
+                      data-item-drag-id={item.id}
+                      className="min-w-0 select-none"
+                      onPointerDown={(event) =>
+                        startItemDrag(
+                          event,
+                          selection.isSelected(item.id)
+                            ? selection.selectedIn(items.map((entry) => entry.id))
+                            : [item.id],
+                        )
+                      }
+                    >
+                      <ItemCard
+                        actions={actions}
+                        isSelected={selection.isSelected(item.id)}
+                        isSelecting={selection.isActive}
+                        onSelect={() => selection.pick(item.id)}
+                        chips={
+                          status === 'plain' ? (
+                            <Chip size="sm" variant="soft">
+                              Notes
                             </Chip>
-                          ) : null}
-                          {item.isFavorite ? (
-                            <Chip color={NOTE_STATUS_CHIP_COLOR[status]} size="sm" variant="soft">
-                              Favorite
-                            </Chip>
-                          ) : null}
-                        </>
-                      )
-                    }
-                    leading={
-                      <span
-                        aria-hidden="true"
-                        className={`h-8 w-1 self-center rounded-full ${NOTE_STATUS_BAR_CLASS[status]}`}
-                        data-note-status={status}
+                          ) : (
+                            <>
+                              {item.isPinned ? (
+                                <Chip
+                                  color={NOTE_STATUS_CHIP_COLOR[status]}
+                                  size="sm"
+                                  variant="soft"
+                                >
+                                  Pinned
+                                </Chip>
+                              ) : null}
+                              {item.isFavorite ? (
+                                <Chip
+                                  color={NOTE_STATUS_CHIP_COLOR[status]}
+                                  size="sm"
+                                  variant="soft"
+                                >
+                                  Favorite
+                                </Chip>
+                              ) : null}
+                            </>
+                          )
+                        }
+                        leading={
+                          <span
+                            aria-hidden="true"
+                            className={`h-8 w-1 self-center rounded-full ${NOTE_STATUS_BAR_CLASS[status]}`}
+                            data-note-status={status}
+                          />
+                        }
+                        subtitle={
+                          notePreview(item.content ?? '') ? (
+                            <Typography className="truncate" color="muted" type="body-sm">
+                              {notePreview(item.content ?? '')}
+                            </Typography>
+                          ) : undefined
+                        }
+                        title={item.title}
+                        onAction={(key) => handleMenuAction(item, key)}
+                        onOpen={() => navigate(`/notes/${item.id}`)}
                       />
-                    }
-                    subtitle={
-                      notePreview(item.content ?? '') ? (
-                        <Typography className="truncate" color="muted" type="body-sm">
-                          {notePreview(item.content ?? '')}
-                        </Typography>
-                      ) : undefined
-                    }
-                    title={item.title}
-                    onAction={(key) => handleMenuAction(item, key)}
-                    onOpen={() => navigate(`/notes/${item.id}`)}
-                  />
-                </li>
-              )
-            })}
-          </ul>
+                    </li>
+                  )
+                })}
+              </ul>
             </ListScrollArea>
           </div>
         </div>

@@ -402,10 +402,64 @@
   }
 
   .kivo-drag-ghost-scale {
+    position: relative;
     transform-origin: var(--kivo-drag-origin, top left);
     transform: scale(1.02);
     transition: transform 220ms var(--ease-smooth, ease-out);
     filter: drop-shadow(0 20px 32px rgb(0 0 0 / 0.35));
+  }
+
+  .kivo-drag-stack {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    transform: rotate(var(--kivo-drag-tilt, 0deg));
+    opacity: 0.85;
+    animation: kivo-drag-stack-in 240ms var(--ease-smooth, ease-out) both;
+  }
+
+  @keyframes kivo-drag-stack-in {
+    from {
+      transform: rotate(0deg);
+      opacity: 0;
+    }
+  }
+
+  .kivo-drag-flyer {
+    position: fixed;
+    z-index: 59;
+    pointer-events: none;
+    list-style: none;
+    transform-origin: top left;
+    transition:
+      transform 280ms var(--ease-smooth, ease-out),
+      opacity 280ms ease-in;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .kivo-drag-stack {
+      animation: none;
+    }
+
+    .kivo-drag-flyer {
+      display: none;
+    }
+  }
+
+  .kivo-drag-count {
+    position: absolute;
+    top: -0.5rem;
+    right: -0.5rem;
+    min-width: 1.5rem;
+    height: 1.5rem;
+    padding: 0 0.375rem;
+    border-radius: 9999px;
+    background: var(--accent);
+    color: var(--accent-foreground);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.5rem;
+    text-align: center;
   }
 
   .kivo-drag-ghost-over {

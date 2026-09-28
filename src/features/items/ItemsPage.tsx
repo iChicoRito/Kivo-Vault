@@ -30,6 +30,7 @@ import {
 import { listTags, type Tag } from '../../data/tags'
 import { notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
 import { useVaultChanged } from '../../lib/useVaultChanged'
+import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { QuickAddMenu } from '../quick-add/QuickAddMenu'
 import { ItemDetailsDialog } from './ItemDetailsDialog'
 
@@ -284,7 +285,9 @@ export function ItemsPage() {
       ) : null}
 
       {loadState === 'ready' && (items.length > 0 || hasActiveFilters) ? (
-        <>
+        <div className="flex gap-4">
+          <CollectionFolderPanel />
+          <div className="grid min-w-0 flex-1 content-start gap-5">
           <SelectionBar
             actionLabel="Move to Trash"
             confirmTrash
@@ -293,6 +296,7 @@ export function ItemsPage() {
             onAction={(ids) => void trashSelected(ids)}
           />
           <ItemTable
+          draggable
           selection={selection}
           emptyMessage="No items match your search or filters."
           items={pagedItems}
@@ -307,7 +311,8 @@ export function ItemsPage() {
           }}
           onTrash={openTrash}
         />
-        </>
+          </div>
+        </div>
       ) : null}
 
       <Modal

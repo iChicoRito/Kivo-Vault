@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Skeleton, Tooltip } from '@heroui/react'
+import { useEffect, useRef, useState } from 'react'
+import { Alert, Button, Card, Dropdown, Label, Skeleton, Tooltip } from '@heroui/react'
 import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react'
 import {
   Database01Icon,
   Delete02Icon,
+  EyeIcon,
   File01Icon,
+  FolderOpenIcon,
   HardDriveIcon,
   Image01Icon,
   Pdf01Icon,
@@ -18,7 +20,9 @@ import { FileTypeIcon } from '../../components/items/FileTypeIcon'
 import { formatSize } from '../../components/items/fileSize'
 import { Panel } from '../../components/ui/Panel'
 import { loadStorageReport, type StorageReport } from '../../data/storage'
+import { openItemFile, revealItemFile } from '../../data/files'
 import { trashItems } from '../../data/items'
+import { notifyError } from '../../lib/feedback'
 import { ItemDetailsDialog } from '../items/ItemDetailsDialog'
 
 // Same accent steps as the dashboard charts, biggest share first.
@@ -51,6 +55,22 @@ export function StorageManagerPage() {
   const [attempt, setAttempt] = useState(0)
   const [openId, setOpenId] = useState<string | null>(null)
   const [trashId, setTrashId] = useState<string | null>(null)
+  const [menu, setMenu] = useState<{ itemId: string; x: number; y: number } | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const menuAnchorRef = useRef<HTMLSpanElement>(null)
+
+  function handleMenuAction(key: string) {
+    const itemId = menu?.itemId
+    setMenu(null)
+    if (!itemId) return
+
+    if (key === 'details') setOpenId(itemId)
+    else if (key === 'open')
+      void openItemFile(itemId).catch(() => notifyError('Kivo could not open this file. Try again.'))
+    else if (key === 'reveal')
+      void revealItemFile(itemId).catch(() => notifyError('Kivo could not show this file. Try again.'))
+    else if (key === 'trash') setTrashId(itemId)
+  }
 
   useEffect(() => {
     let active = true
@@ -91,6 +111,7 @@ export function StorageManagerPage() {
         .sort((a, b) => b.bytes - a.bytes)
     : []
   const largestBytes = report?.largest[0]?.byteSize ?? 0
+  const largestTotal = report?.largest.reduce((sum, file) => sum + file.byteSize, 0) ?? 0
 
   const stats = report
     ? [
@@ -259,7 +280,10 @@ export function StorageManagerPage() {
               id="storage-largest"
               meta={
                 report && report.largest.length > 0 ? (
-                  <span className="text-xs text-muted">Top {report.largest.length} by size</span>
+                  <span className="text-xs text-muted tabular-nums">
+                    Top {report.largest.length} · {formatSize(largestTotal)} ·{' '}
+                    {percentOf(largestTotal, report.fileBytes)}% of file space
+                  </span>
                 ) : null
               }
               title="Largest files"
@@ -267,69 +291,182 @@ export function StorageManagerPage() {
               {!report ? (
                 <div aria-hidden="true" className="grid gap-2">
                   {Array.from({ length: 4 }, (_, index) => (
-                    <Skeleton key={index} animationType="shimmer" className="h-10 rounded-md" />
+                    <Skeleton key={index} animationType="shimmer" className="h-14 rounded-xl" />
                   ))}
                 </div>
               ) : report.largest.length === 0 ? (
-                <p className="m-0 py-6 text-center text-sm text-muted">
-                  No managed files yet. Add a file to see it here.
-                </p>
+                <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-default px-6 py-10 text-center">
+                  <span
+                    aria-hidden="true"
+                    className="flex size-12 items-center justify-center rounded-full bg-background-tertiary text-muted"
+                  >
+                    <HugeiconsIcon icon={File01Icon} size={22} />
+                  </span>
+                  <p className="m-0 text-sm text-muted">
+                    No managed files yet. Add a file to see it here.
+                  </p>
+                </div>
               ) : (
-                <ul className="-mx-2 m-0 grid list-none p-0">
-                  {report.largest.map((file) => (
-                    <li
-                      key={file.itemId}
-                      className="group flex items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-default"
-                    >
-                      <button
-                        className={`flex min-w-0 flex-1 items-center gap-3 rounded-md text-left ${focusRing}`}
-                        type="button"
-                        onClick={() => setOpenId(file.itemId)}
-                      >
-                        <span className="grid size-8 shrink-0 place-items-center">
-                          <FileTypeIcon name={file.originalName} size={24} />
-                        </span>
-                        <span className="grid min-w-0 flex-1">
-                          <span className="truncate text-sm font-medium">{file.title}</span>
-                          <span className="truncate text-xs text-muted">
-                            {file.originalName}
-                            {file.importedAt ? ` · Added ${formatDate(file.importedAt)}` : ''}
-                          </span>
-                        </span>
-                      </button>
-                      <span
-                        aria-hidden="true"
-                        className="hidden h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-default sm:block"
-                      >
-                        <span
-                          className="block h-full rounded-full bg-accent"
-                          style={{ width: `${(file.byteSize / Math.max(largestBytes, 1)) * 100}%` }}
-                        />
-                      </span>
-                      <span className="w-16 shrink-0 text-right text-sm font-semibold tabular-nums">
-                        {formatSize(file.byteSize)}
-                      </span>
-                      <Tooltip.Root closeDelay={0} delay={200}>
-                        <Button
-                          isIconOnly
-                          aria-label={`Move ${file.title} to Trash`}
-                          size="sm"
-                          variant="ghost"
-                          onPress={() => setTrashId(file.itemId)}
+                <div ref={listRef} className="relative grid gap-1">
+                  {/* Column labels line up with the row cells from the small breakpoint up. */}
+                  <div
+                    aria-hidden="true"
+                    className="hidden grid-cols-[1.75rem_minmax(0,1fr)_10rem_4.5rem_2rem] items-center gap-3 px-2 pb-1 text-xs text-muted sm:grid"
+                  >
+                    <span className="text-center">#</span>
+                    <span>File</span>
+                    <span>Share of files</span>
+                    <span className="text-right">Size</span>
+                    <span />
+                  </div>
+                  <ul className="m-0 grid list-none divide-y divide-separator p-0">
+                    {report.largest.map((file, index) => {
+                      const share = percentOf(file.byteSize, report.fileBytes)
+                      const extension = file.originalName.includes('.')
+                        ? file.originalName.split('.').pop()?.toUpperCase()
+                        : null
+
+                      return (
+                        <li
+                          key={file.itemId}
+                          onContextMenu={(event) => {
+                            event.preventDefault()
+
+                            const bounds = listRef.current?.getBoundingClientRect()
+                            setMenu({
+                              itemId: file.itemId,
+                              x: event.clientX - (bounds?.left ?? 0),
+                              y: event.clientY - (bounds?.top ?? 0),
+                            })
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+
+                            event.preventDefault()
+
+                            const row = event.currentTarget.getBoundingClientRect()
+                            const bounds = listRef.current?.getBoundingClientRect()
+                            setMenu({
+                              itemId: file.itemId,
+                              x: row.left - (bounds?.left ?? 0) + 16,
+                              y: row.top - (bounds?.top ?? 0) + 16,
+                            })
+                          }}
+                          className="group grid grid-cols-[1.75rem_minmax(0,1fr)_4.5rem_2rem] items-center gap-3 rounded-xl px-2 py-2.5 transition-colors hover:bg-default sm:grid-cols-[1.75rem_minmax(0,1fr)_10rem_4.5rem_2rem]"
                         >
-                          <HugeiconsIcon
-                            aria-hidden="true"
-                            className="text-danger"
-                            icon={Delete02Icon}
-                            size={16}
-                            strokeWidth={1.75}
-                          />
-                        </Button>
-                        <Tooltip.Content placement="top">Move to Trash</Tooltip.Content>
-                      </Tooltip.Root>
-                    </li>
-                  ))}
-                </ul>
+                          <span className="text-center text-xs font-semibold text-muted tabular-nums">
+                            {index + 1}
+                          </span>
+                          <button
+                            className={`flex min-w-0 items-center gap-3 rounded-md text-left ${focusRing}`}
+                            type="button"
+                            onClick={() => setOpenId(file.itemId)}
+                          >
+                            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-default transition-colors group-hover:bg-surface">
+                              <FileTypeIcon name={file.originalName} size={22} />
+                            </span>
+                            <span className="grid min-w-0 flex-1 gap-0.5">
+                              <span className="truncate text-sm font-medium">{file.title}</span>
+                              <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                                {extension ? (
+                                  <span className="shrink-0 rounded-md bg-default px-1.5 py-px text-[0.625rem] font-semibold tracking-wide transition-colors group-hover:bg-surface">
+                                    {extension}
+                                  </span>
+                                ) : null}
+                                <span className="truncate">
+                                  {file.originalName}
+                                  {file.importedAt ? ` · Added ${formatDate(file.importedAt)}` : ''}
+                                </span>
+                              </span>
+                            </span>
+                          </button>
+                          <span aria-hidden="true" className="hidden items-center gap-2 sm:flex">
+                            <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-default transition-colors group-hover:bg-surface">
+                              <span
+                                className="block h-full rounded-full bg-accent"
+                                style={{ width: `${(file.byteSize / Math.max(largestBytes, 1)) * 100}%` }}
+                              />
+                            </span>
+                            <span className="w-9 text-right text-xs text-muted tabular-nums">{share}%</span>
+                          </span>
+                          <span className="text-right text-sm font-semibold tabular-nums">
+                            {formatSize(file.byteSize)}
+                          </span>
+                          <Tooltip.Root closeDelay={0} delay={200}>
+                            <Button
+                              isIconOnly
+                              aria-label={`Move ${file.title} to Trash`}
+                              className="opacity-60 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                              size="sm"
+                              variant="ghost"
+                              onPress={() => setTrashId(file.itemId)}
+                            >
+                              <HugeiconsIcon
+                                aria-hidden="true"
+                                className="text-danger"
+                                icon={Delete02Icon}
+                                size={16}
+                                strokeWidth={1.75}
+                              />
+                            </Button>
+                            <Tooltip.Content placement="top">Move to Trash</Tooltip.Content>
+                          </Tooltip.Root>
+                        </li>
+                      )
+                    })}
+                  </ul>
+
+                  {/* The row menu opens where the pointer was, so it anchors to this
+                      zero-size mark instead of a fixed corner of the list. */}
+                  <span
+                    ref={menuAnchorRef}
+                    aria-hidden="true"
+                    className="pointer-events-none absolute"
+                    style={{ left: menu?.x ?? 0, top: menu?.y ?? 0 }}
+                  />
+                  <Dropdown
+                    isOpen={menu !== null}
+                    onOpenChange={(isOpen) => {
+                      if (!isOpen) setMenu(null)
+                    }}
+                  >
+                    <Dropdown.Trigger aria-label="File actions" className="sr-only" />
+                    <Dropdown.Popover triggerRef={menuAnchorRef}>
+                      <Dropdown.Menu
+                        autoFocus
+                        className="kivo-row-actions-menu"
+                        onAction={(key) => handleMenuAction(String(key))}
+                      >
+                        <Dropdown.Item id="details" textValue="Open details">
+                          <HugeiconsIcon aria-hidden="true" icon={EyeIcon} size={16} />
+                          <Label>Open details</Label>
+                        </Dropdown.Item>
+                        <Dropdown.Item id="open" textValue="Open file">
+                          <HugeiconsIcon aria-hidden="true" icon={File01Icon} size={16} />
+                          <Label>Open file</Label>
+                        </Dropdown.Item>
+                        <Dropdown.Item id="reveal" textValue="Show in folder">
+                          <HugeiconsIcon aria-hidden="true" icon={FolderOpenIcon} size={16} />
+                          <Label>Show in folder</Label>
+                        </Dropdown.Item>
+                        <Dropdown.Section
+                          aria-label="Danger zone"
+                          className="mt-1 border-t border-separator pt-1"
+                        >
+                          <Dropdown.Item id="trash" textValue="Move to Trash" variant="danger">
+                            <HugeiconsIcon
+                              aria-hidden="true"
+                              className="text-danger"
+                              icon={Delete02Icon}
+                              size={16}
+                            />
+                            <Label>Move to Trash</Label>
+                          </Dropdown.Item>
+                        </Dropdown.Section>
+                      </Dropdown.Menu>
+                    </Dropdown.Popover>
+                  </Dropdown>
+                </div>
               )}
             </Panel>
           </div>

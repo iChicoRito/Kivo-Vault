@@ -928,6 +928,83 @@ pub fn delete_credentials_permanently(
     delete_credentials_permanently_with_state(db.inner(), vault.inner(), &ids)
 }
 
+/// A reset needs the app lock password when one is set, or else the password
+/// vault's master password when that vault is set up. Returns whether a
+/// password was needed, and fails when a needed one is missing or wrong.
+fn check_reset_password(connection: &Connection, password: Option<&str>) -> Result<bool, String> {
+    if crate::database::has_stored_password_lock(connection)
+        .map_err(|error| format!("Could not read app lock: {error}"))?
+    {
+        let verifier = crate::database::read_password_verifier(connection)
+            .map_err(|error| format!("Could not read app lock: {error}"))?
+            .unwrap_or_default();
+        return match password {
+            Some(password) if crate::security::secret_matches(password, &verifier) => Ok(true),
+            _ => Err(RESET_PASSWORD_ERROR.to_string()),
+        };
+    }
+
+    if vault_configured(connection)
+        .map_err(|error| format!("Could not read the password vault: {error}"))?
+    {
+        let Some(password) = password else {
+            return Err(RESET_PASSWORD_ERROR.to_string());
+        };
+        let mut key = unlock_vault_in(connection, password)
+            .map_err(|_| RESET_PASSWORD_ERROR.to_string())?;
+        key.fill(0);
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+const RESET_PASSWORD_ERROR: &str = "That password is not correct";
+
+fn reset_with_state(
+    db: &DatabaseState,
+    vault: &VaultKeyState,
+    password: Option<&str>,
+) -> Result<(), String> {
+    {
+        let connection = db.require_connection()?;
+        check_reset_password(connection.as_ref().expect("checked above"), password)?;
+    }
+    vault.clear();
+    db.reset()
+}
+
+/// Tells the Danger zone whether to ask for a password before a reset.
+#[tauri::command]
+pub fn reset_requires_password(db: State<'_, DatabaseState>) -> Result<bool, String> {
+    let connection = db.require_connection()?;
+    let connection = connection.as_ref().expect("checked above");
+    let locked = crate::database::has_stored_password_lock(connection)
+        .map_err(|error| format!("Could not read app lock: {error}"))?;
+    let vault = vault_configured(connection)
+        .map_err(|error| format!("Could not read the password vault: {error}"))?;
+    Ok(locked || vault)
+}
+
+/// Checks the reset password before the confirm step, so a wrong one never
+/// gets past the first screen. The reset itself checks it again.
+#[tauri::command]
+pub fn verify_reset_password(password: String, db: State<'_, DatabaseState>) -> Result<(), String> {
+    let connection = db.require_connection()?;
+    check_reset_password(connection.as_ref().expect("checked above"), Some(&password)).map(|_| ())
+}
+
+// Wipes every note, source, file, password, and setting. The password vault key
+// is cleared too, so nothing unlocked survives the reset.
+#[tauri::command]
+pub fn reset_vault(
+    password: Option<String>,
+    db: State<'_, DatabaseState>,
+    keys: State<'_, VaultKeyState>,
+) -> Result<(), String> {
+    reset_with_state(db.inner(), keys.inner(), password.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -973,6 +1050,21 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn reset_needs_the_master_password_once_the_password_vault_is_set_up() {
+        let temp = TempVault::new("reset");
+        let db = temp.state();
+        let vault = VaultKeyState::default();
+        setup_vault_with_state(&db, &vault, "correct horse").expect("set up vault");
+
+        assert!(reset_with_state(&db, &vault, None).is_err());
+        assert!(reset_with_state(&db, &vault, Some("wrong password")).is_err());
+        assert!(vault_status_with_state(&db, &vault).expect("status").configured);
+
+        reset_with_state(&db, &vault, Some("correct horse")).expect("reset with password");
+        assert!(!vault_status_with_state(&db, &vault).expect("status").configured);
     }
 
     fn migrated_memory_database() -> Connection {

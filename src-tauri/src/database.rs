@@ -239,6 +239,39 @@ impl DatabaseState {
         self.initialize()
     }
 
+    // Deletes the database and every managed file, then opens a fresh, empty
+    // database, so the app starts over at onboarding. The connection is reopened
+    // even when a delete fails so the app is never left without a database.
+    pub(crate) fn reset(&self) -> Result<(), String> {
+        let _ = self.content_key.clear();
+        self.close_connection()?;
+
+        let mut removed = Ok(());
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut name = self.path.as_os_str().to_owned();
+            name.push(suffix);
+            let path = PathBuf::from(name);
+            if path.exists() {
+                if let Err(error) = fs::remove_file(&path) {
+                    removed = Err(format!("Could not delete the local database: {error}"));
+                }
+            }
+        }
+        for dir in [
+            self.files_dir.clone(),
+            self.files_dir.with_extension("content-conversion"),
+        ] {
+            if dir.exists() {
+                if let Err(error) = fs::remove_dir_all(&dir) {
+                    removed = Err(format!("Could not delete managed files: {error}"));
+                }
+            }
+        }
+
+        let reopened = self.initialize();
+        removed.and(reopened)
+    }
+
     fn boot_state(&self) -> Result<BootState, String> {
         let connection = self.require_connection()?;
         read_boot_state(connection.as_ref().expect("checked above"))
@@ -1349,6 +1382,24 @@ mod tests {
             state.password_verifier().expect("read verifier").as_deref(),
             Some("not-a-phc-string")
         );
+    }
+
+    #[test]
+    fn reset_deletes_the_vault_and_returns_to_onboarding() {
+        let workspace = TempWorkspace::new("reset");
+        let state = workspace.state();
+        state.initialize().expect("initialize database");
+        state
+            .complete_setup(setup_input(&["Projects"], Some(VERIFIER)))
+            .expect("complete setup");
+        fs::write(workspace.files_dir().join("stored.bin"), b"data").expect("write managed file");
+        assert_ne!(state.boot_state().expect("boot state"), BootState::Onboarding);
+
+        state.reset().expect("reset vault");
+
+        assert_eq!(state.boot_state().expect("boot state"), BootState::Onboarding);
+        assert!(!workspace.files_dir().join("stored.bin").exists());
+        assert!(workspace.files_dir().exists(), "files folder is recreated empty");
     }
 
     #[test]

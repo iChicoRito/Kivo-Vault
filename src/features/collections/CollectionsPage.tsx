@@ -66,9 +66,11 @@ import {
 import type { CollectionsView } from '../../data/settings'
 import { notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
 import { useVaultChanged } from '../../lib/useVaultChanged'
+import { CollectionFolderPanel } from './CollectionFolderPanel'
 import { CollectionFolderFloat } from './CollectionFolderFloat'
 import { CollectionItemView } from './CollectionItemView'
 import { openItemByKind } from './itemOpen'
+import { startItemDrag } from './itemDrag'
 import { UnlockDialog } from './UnlockDialog'
 
 type LoadState = 'loading' | 'ready' | 'error'
@@ -1004,11 +1006,24 @@ export function CollectionsPage() {
 
           {itemsState === 'ready' ? (
             items.length === 0 ? (
-              <EmptyState aria-label="Empty list" className="grid justify-items-start gap-3">
-                <Typography type="h2">No items in this collection.</Typography>
-                <Typography color="muted" type="body">
-                  Move items into this collection to see them here.
-                </Typography>
+              <EmptyState
+                aria-label="Empty list"
+                className="flex min-h-[32rem] flex-col items-center justify-center gap-5 rounded-3xl border border-dashed border-default px-6 py-16 text-center"
+              >
+                <span
+                  aria-hidden="true"
+                  className="flex size-14 items-center justify-center rounded-full bg-background-tertiary text-muted"
+                >
+                  <HugeiconsIcon icon={FolderOpenIcon} size={24} />
+                </span>
+                <div className="grid max-w-lg gap-2">
+                  <Typography align="center" type="h3">
+                    No items in this collection.
+                  </Typography>
+                  <Typography align="center" color="muted" type="body">
+                    Move items into this collection to see them here.
+                  </Typography>
+                </div>
               </EmptyState>
             ) : (
               <>
@@ -1021,6 +1036,9 @@ export function CollectionsPage() {
                   onAction={(ids) => void trashSelected(ids)}
                 />
               </div>
+              <div className="flex gap-4">
+              <CollectionFolderPanel />
+              <div className="min-w-0 flex-1">
               <ListScrollArea>
                 <ul
                   className={
@@ -1032,7 +1050,16 @@ export function CollectionsPage() {
                   {items.map((item) => (
                     <li
                       key={item.id}
-                      className="relative min-w-0"
+                      data-item-drag-id={item.id}
+                      className="relative min-w-0 select-none"
+                      onPointerDown={(event) =>
+                        startItemDrag(
+                          event,
+                          selection.isSelected(item.id)
+                            ? selection.selectedIn(items.map((entry) => entry.id))
+                            : [item.id],
+                        )
+                      }
                       onContextMenu={(event) => {
                         event.preventDefault()
 
@@ -1071,6 +1098,8 @@ export function CollectionsPage() {
                   ))}
                 </ul>
               </ListScrollArea>
+              </div>
+              </div>
               </>
             )
           ) : null}

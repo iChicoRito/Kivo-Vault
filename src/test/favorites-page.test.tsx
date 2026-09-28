@@ -17,6 +17,7 @@ const feedbackMock = vi.hoisted(() => ({
   notifyError: vi.fn(),
 }))
 
+vi.mock('../features/collections/CollectionFolderPanel', () => ({ CollectionFolderPanel: () => null }))
 vi.mock('../data/items', () => itemsMock)
 vi.mock('../lib/feedback', () => feedbackMock)
 vi.mock('../features/items/ItemDetailsDialog', () => ({ ItemDetailsDialog: () => null }))
@@ -109,7 +110,7 @@ describe('FavoritesPage', () => {
     render(<FavoritesPage />)
 
     expect(
-      await screen.findByText('No favorites yet. Items marked as favorites will appear here.'),
+      await screen.findByText('Items you mark as favorites will appear here.'),
     ).toBeInTheDocument()
   })
 

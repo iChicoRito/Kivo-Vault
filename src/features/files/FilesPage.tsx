@@ -42,6 +42,7 @@ import { openItemFile, pickFiles, revealItemFile } from '../../data/files'
 import { notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
 import { useVaultChanged } from '../../lib/useVaultChanged'
 import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
+import { startItemDrag } from '../collections/itemDrag'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -356,7 +357,19 @@ export function FilesPage() {
                     ]
 
                     return (
-                      <li key={file.id} className="min-w-0">
+                      <li
+                        key={file.id}
+                        data-item-drag-id={file.id}
+                        className="min-w-0 select-none"
+                        onPointerDown={(event) =>
+                          startItemDrag(
+                            event,
+                            selection.isSelected(file.id)
+                              ? selection.selectedIn(files.map((entry) => entry.id))
+                              : [file.id],
+                          )
+                        }
+                      >
                         <ItemCard
                           actions={actions}
                           isSelected={selection.isSelected(file.id)}

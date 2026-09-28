@@ -177,11 +177,7 @@ export function SourcesPage() {
   return (
     <section aria-labelledby="sources-title" className="grid gap-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <PageHeader
-          description={sourcesDescription}
-          title={sourcesTitle}
-          titleId="sources-title"
-        />
+        <PageHeader description={sourcesDescription} title={sourcesTitle} titleId="sources-title" />
         <Button data-tour="sources" onPress={openCreate}>
           <HugeiconsIcon aria-hidden="true" icon={PlusSignIcon} size={18} />
           New Source
@@ -261,67 +257,88 @@ export function SourcesPage() {
               </div>
             ) : (
               <>
-              <div className="mb-3 empty:hidden">
-                <SelectionBar
-                  actionLabel="Move to Trash"
-                  confirmTrash
-                  selection={selection}
-                  visibleIds={sources.map((entry) => entry.id)}
-                  onAction={(ids) => void trashSelected(ids)}
-                />
-              </div>
-              <ListScrollArea>
-                <ul className="grid gap-2">
-                  {sources.map((source) => {
-                    const actions: ItemCardAction[] = [
-                      {
-                        id: 'open',
-                        label: 'Open link',
-                        icon: Link02Icon,
-                        isDisabled: !source.url,
-                      },
-                      { id: 'edit', label: 'Edit source', icon: NoteEditIcon },
-                      { id: 'move', label: 'Move to collection', icon: FolderOpenIcon },
-                      { id: 'trash', label: 'Move to trash', icon: Delete02Icon, danger: true },
-                    ]
+                <div className="mb-3 empty:hidden">
+                  <SelectionBar
+                    actionLabel="Move to Trash"
+                    confirmTrash
+                    selection={selection}
+                    visibleIds={sources.map((entry) => entry.id)}
+                    onAction={(ids) => void trashSelected(ids)}
+                  />
+                </div>
+                <ListScrollArea>
+                  <ul className="grid gap-2">
+                    {sources.map((source) => {
+                      const actions: ItemCardAction[] = [
+                        {
+                          id: 'open',
+                          label: 'Open link',
+                          icon: Link02Icon,
+                          isDisabled: !source.url,
+                        },
+                        {
+                          id: 'edit',
+                          label: 'Edit source',
+                          icon: NoteEditIcon,
+                        },
+                        {
+                          id: 'move',
+                          label: 'Move to collection',
+                          icon: FolderOpenIcon,
+                        },
+                        {
+                          id: 'trash',
+                          label: 'Move to trash',
+                          icon: Delete02Icon,
+                          danger: true,
+                        },
+                      ]
 
-                    return (
-                      <li
-                        key={source.id}
-                        className="min-w-0 select-none"
-                        onPointerDown={(event) => startItemDrag(event, source.id)}
-                      >
-                        <ItemCard
-                          actions={actions}
-                          isSelected={selection.isSelected(source.id)}
-                          isSelecting={selection.isActive}
-                          onSelect={() => selection.pick(source.id)}
-                          isOpenDisabled={!source.url}
-                          leading={
-                            <span className="grid size-11 place-items-center rounded-xl bg-default">
-                              <HugeiconsIcon
-                                aria-hidden="true"
-                                className="text-muted"
-                                icon={Link02Icon}
-                                size={18}
-                                strokeWidth={1.75}
-                              />
-                            </span>
+                      return (
+                        <li
+                          key={source.id}
+                          data-item-drag-id={source.id}
+                          className="min-w-0 select-none"
+                          onPointerDown={(event) =>
+                            startItemDrag(
+                              event,
+                              selection.isSelected(source.id)
+                                ? selection.selectedIn(sources.map((entry) => entry.id))
+                                : [source.id],
+                            )
                           }
-                          subtitle={
-                            <Typography className="truncate" color="muted" type="body-sm">
-                              {source.url ?? 'No address saved.'}
-                            </Typography>
-                          }
-                          title={source.title}
-                          onAction={(key) => handleMenuAction(source, key)}
-                          onOpen={() => void handleOpen(source)}
-                        />
-                      </li>
-                    )
-                  })}
-                </ul>
-              </ListScrollArea>
+                        >
+                          <ItemCard
+                            actions={actions}
+                            isSelected={selection.isSelected(source.id)}
+                            isSelecting={selection.isActive}
+                            onSelect={() => selection.pick(source.id)}
+                            isOpenDisabled={!source.url}
+                            leading={
+                              <span className="grid size-11 place-items-center rounded-xl bg-default">
+                                <HugeiconsIcon
+                                  aria-hidden="true"
+                                  className="text-muted"
+                                  icon={Link02Icon}
+                                  size={18}
+                                  strokeWidth={1.75}
+                                />
+                              </span>
+                            }
+                            subtitle={
+                              <Typography className="truncate" color="muted" type="body-sm">
+                                {source.url ?? 'No address saved.'}
+                              </Typography>
+                            }
+                            title={source.title}
+                            onAction={(key) => handleMenuAction(source, key)}
+                            onOpen={() => void handleOpen(source)}
+                          />
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </ListScrollArea>
               </>
             )}
           </div>

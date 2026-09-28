@@ -66,6 +66,7 @@ const portabilityMock = vi.hoisted(() => ({
   importMarkdown: vi.fn(),
 }))
 
+vi.mock('../features/collections/CollectionFolderPanel', () => ({ CollectionFolderPanel: () => null }))
 vi.mock('../data/items', () => itemsMock)
 vi.mock('../data/files', () => filesMock)
 vi.mock('../data/collections', () => collectionsMock)

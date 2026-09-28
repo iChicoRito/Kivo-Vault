@@ -44,6 +44,7 @@ import { reindexItems } from '../../data/insights'
 import AppLockSettings from '../security/AppLockSettings'
 import EncryptionSettings from '../security/EncryptionSettings'
 import BackupSettings from '../backup/BackupSettings'
+import DangerZoneSettings from './DangerZoneSettings'
 import PortabilitySettings from '../portability/PortabilitySettings'
 import { ShortcutsDialog } from '../shortcuts/ShortcutsDialog'
 
@@ -876,6 +877,7 @@ export default function SettingsPage() {
           </Typography>
           <BackupSettings />
           <PortabilitySettings />
+          <DangerZoneSettings />
         </Tabs.Panel>
 
         <Tabs.Panel className="grid gap-5 pt-5" id="about">

@@ -406,6 +406,13 @@ impl DatabaseState {
             .unwrap_or(false)
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn lock_collection(&self, id: &str) {
+        if let Ok(mut unlocked) = self.unlocked_collections.lock() {
+            unlocked.remove(id);
+        }
+    }
+
     pub(crate) fn clear_unlocked_collections(&self) {
         if let Ok(mut unlocked) = self.unlocked_collections.lock() {
             unlocked.clear();

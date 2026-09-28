@@ -51,6 +51,7 @@ import { CollectionSelect, ConfirmDialog } from '../../components/items/dialogs'
 import {
   deleteCollection,
   listCollections,
+  lockCollection,
   saveCollection,
   type Collection,
   type CollectionProtection,
@@ -81,6 +82,9 @@ const PASSWORD_REQUIRED_ERROR = 'Enter a password for this collection.'
 const PASSWORD_SHORT_ERROR = 'Password must be at least 4 characters.'
 const PIN_REQUIRED_ERROR = 'Enter a 6-digit PIN.'
 const SAVE_ERROR = 'Kivo could not save this collection. Try again.'
+const CURRENT_REQUIRED_ERROR = 'Enter the current password or PIN to change the lock.'
+const LOCKED_SAVE_ERROR = 'This collection is locked. Unlock it first, then try again.'
+const CURRENT_WRONG_ERROR = 'The current password or PIN is not correct.'
 const DELETE_ERROR = 'Kivo could not delete this collection. Try again.'
 const ITEMS_ERROR = 'Kivo could not load items in this collection. Try again.'
 const OPEN_ERROR = 'Kivo could not open this item. Try again.'
@@ -107,7 +111,11 @@ function countCopy(count: number) {
 }
 
 // The list rows and the grid folder offer the same actions, so both build them here.
-function collectionActions(collection: Collection, exporting: boolean): ItemCardAction[] {
+function collectionActions(
+  collection: Collection,
+  exporting: boolean,
+  unlocked = false,
+): ItemCardAction[] {
   return [
     { id: 'view', label: `View items in ${collection.name}`, icon: EyeIcon },
     { id: 'rename', label: `Rename ${collection.name}`, icon: NoteEditIcon },
@@ -117,6 +125,20 @@ function collectionActions(collection: Collection, exporting: boolean): ItemCard
       icon: Download01Icon,
       isDisabled: exporting,
     },
+    // An unlocked protected collection can be closed again without locking the app.
+    ...(collection.protection !== 'none' && unlocked
+      ? [{ id: 'lock', label: `Lock ${collection.name}`, icon: LockIcon }]
+      : []),
+    // Removing the lock always asks for the present password or PIN.
+    ...(collection.protection !== 'none'
+      ? [
+          {
+            id: 'remove-lock',
+            label: `Remove ${collection.protection === 'pin' ? 'PIN' : 'password'} from ${collection.name}`,
+            icon: LockIcon,
+          },
+        ]
+      : []),
     {
       id: 'delete',
       label: `Delete ${collection.name}`,
@@ -177,6 +199,8 @@ type EditState = {
   initialProtection: CollectionProtection
   protection: CollectionProtection
   secret: string
+  /** The present password or PIN, asked when an existing lock changes. */
+  currentSecret: string
 }
 
 function CollectionChip({ collection }: { collection: Collection }) {
@@ -210,6 +234,9 @@ export function CollectionsPage() {
   const [collectionItems, setCollectionItems] = useState<Record<string, ItemSummary[]>>({})
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [removeLockTarget, setRemoveLockTarget] = useState<Collection | null>(null)
+  const [removeLockSecret, setRemoveLockSecret] = useState('')
+  const [removeLockError, setRemoveLockError] = useState<string | null>(null)
   const [itemsState, setItemsState] = useState<LoadState>('ready')
   const [items, setItems] = useState<ItemSummary[]>([])
   const [itemsAttempt, setItemsAttempt] = useState(0)
@@ -413,6 +440,7 @@ export function CollectionsPage() {
       initialProtection: 'none',
       protection: 'none',
       secret: '',
+      currentSecret: '',
     })
   }
 
@@ -425,6 +453,7 @@ export function CollectionsPage() {
       initialProtection: collection.protection,
       protection: collection.protection,
       secret: '',
+      currentSecret: '',
     })
   }
 
@@ -451,6 +480,13 @@ export function CollectionsPage() {
       }
     }
 
+    // Removing or changing an existing lock needs the present secret first.
+    const needsCurrent = !isCreate && protectionChanged && edit.initialProtection !== 'none'
+    if (needsCurrent && !edit.currentSecret.trim()) {
+      setEditError(CURRENT_REQUIRED_ERROR)
+      return
+    }
+
     setEditError(null)
 
     const payload: {
@@ -459,6 +495,7 @@ export function CollectionsPage() {
       icon?: string | null
       protection?: CollectionProtection
       secret?: string | null
+      currentSecret?: string
     } = {
       id: edit.id,
       name,
@@ -471,15 +508,25 @@ export function CollectionsPage() {
       payload.protection = edit.protection
       if (edit.protection !== 'none') payload.secret = edit.secret.trim()
     }
+    if (needsCurrent) payload.currentSecret = edit.currentSecret.trim()
 
     try {
       await saveCollection(payload)
       setEdit(null)
       await loadCollections()
       notifySuccess('Collection saved')
-    } catch {
-      setEditError(SAVE_ERROR)
-      notifyError(SAVE_ERROR)
+    } catch (reason) {
+      const text = String(reason)
+      if (text.includes('current password or PIN is not correct')) {
+        setEditError(CURRENT_WRONG_ERROR)
+      } else if (text.includes('Too many wrong tries')) {
+        setEditError(text.replace(/^Error:\s*/, ''))
+      } else if (text.includes('This collection is locked')) {
+        setEditError(LOCKED_SAVE_ERROR)
+      } else {
+        setEditError(SAVE_ERROR)
+        notifyError(SAVE_ERROR)
+      }
     }
   }
 
@@ -505,6 +552,62 @@ export function CollectionsPage() {
     else if (key === 'rename') runGated(collection, () => openRename(collection))
     else if (key === 'export') runGated(collection, () => void handleExportCollection(collection))
     else if (key === 'delete') runGated(collection, () => setDeleteTarget(collection))
+    else if (key === 'lock') void handleLock(collection)
+    else if (key === 'remove-lock') {
+      setRemoveLockError(null)
+      setRemoveLockSecret('')
+      setRemoveLockTarget(collection)
+    }
+  }
+
+  async function handleRemoveLock() {
+    if (!removeLockTarget) return
+    if (!removeLockSecret.trim()) {
+      setRemoveLockError(CURRENT_REQUIRED_ERROR)
+      return
+    }
+    try {
+      await saveCollection({
+        id: removeLockTarget.id,
+        name: removeLockTarget.name,
+        icon: removeLockTarget.icon,
+        protection: 'none',
+        currentSecret: removeLockSecret.trim(),
+      })
+      setRemoveLockTarget(null)
+      setRemoveLockSecret('')
+      await loadCollections()
+      notifySuccess('Lock removed')
+    } catch (reason) {
+      const text = String(reason)
+      setRemoveLockError(
+        text.includes('current password or PIN is not correct')
+          ? CURRENT_WRONG_ERROR
+          : text.includes('Too many wrong tries')
+            ? text.replace(/^Error:\s*/, '')
+            : SAVE_ERROR,
+      )
+    }
+  }
+
+  async function handleLock(collection: Collection) {
+    setUnlocked((current) => {
+      const next = new Set(current)
+      next.delete(collection.id)
+      return next
+    })
+    setCollectionItems((current) => {
+      const next = { ...current }
+      delete next[collection.id]
+      return next
+    })
+    if (selectedId === collection.id) setSelectedId(null)
+    try {
+      await lockCollection(collection.id)
+      notifySuccess(`${collection.name} is locked`)
+    } catch {
+      notifyError('Kivo could not lock this collection. Lock the app to close it.')
+    }
   }
 
   // Export reads the collection once more so the file holds the live item ids,
@@ -841,7 +944,7 @@ export function CollectionsPage() {
               {filtered.map((collection) => (
                 <li key={collection.id} className="min-w-0">
                   <CollectionFolderFloat
-                    actions={collectionActions(collection, exporting)}
+                    actions={collectionActions(collection, exporting, unlocked.has(collection.id))}
                     collection={collection}
                     items={collectionItems[collection.id] ?? []}
                     locked={isLocked(collection)}
@@ -859,7 +962,7 @@ export function CollectionsPage() {
           <ListScrollArea>
             <ul className="grid gap-2">
               {filtered.map((collection) => {
-                const actions = collectionActions(collection, exporting)
+                const actions = collectionActions(collection, exporting, unlocked.has(collection.id))
 
                 return (
                   <li key={collection.id} className="min-w-0">
@@ -917,6 +1020,12 @@ export function CollectionsPage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              {selected.protection !== 'none' ? (
+                <Button variant="secondary" onPress={() => void handleLock(selected)}>
+                  <HugeiconsIcon aria-hidden="true" icon={LockIcon} size={18} />
+                  Lock
+                </Button>
+              ) : null}
               <Tabs
                 className="w-fit"
                 selectedKey={itemsView}
@@ -1240,6 +1349,53 @@ export function CollectionsPage() {
                   </Select.Popover>
                 </Select>
 
+                {edit?.id &&
+                edit.initialProtection !== 'none' &&
+                edit.protection !== edit.initialProtection &&
+                edit.initialProtection === 'pin' ? (
+                  <div className="grid gap-2">
+                    <Label>Current PIN</Label>
+                    <InputOTP
+                      aria-label="Current PIN"
+                      className="kivo-otp"
+                      maxLength={6}
+                      pattern={REGEXP_ONLY_DIGITS}
+                      value={edit.currentSecret}
+                      onChange={(value) =>
+                        setEdit((current) => (current ? { ...current, currentSecret: value } : current))
+                      }
+                    >
+                      <InputOTP.Group>
+                        <InputOTP.Slot index={0} />
+                        <InputOTP.Slot index={1} />
+                        <InputOTP.Slot index={2} />
+                        <InputOTP.Slot index={3} />
+                        <InputOTP.Slot index={4} />
+                        <InputOTP.Slot index={5} />
+                      </InputOTP.Group>
+                    </InputOTP>
+                  </div>
+                ) : edit?.id &&
+                  edit.initialProtection !== 'none' &&
+                  edit.protection !== edit.initialProtection ? (
+                  <TextField
+                    isInvalid={editError === CURRENT_REQUIRED_ERROR || editError === CURRENT_WRONG_ERROR}
+                    value={edit.currentSecret}
+                    onChange={(value) =>
+                      setEdit((current) => (current ? { ...current, currentSecret: value } : current))
+                    }
+                  >
+                    <Label>Current password</Label>
+                    <Input
+                      fullWidth
+                      autoComplete="current-password"
+                      placeholder="Needed to change the lock"
+                      type="password"
+                      variant="secondary"
+                    />
+                  </TextField>
+                ) : null}
+
                 {edit?.protection === 'password' ? (
                   <TextField
                     isInvalid={editError !== null}
@@ -1296,6 +1452,78 @@ export function CollectionsPage() {
                 </Button>
                 <Button fullWidth variant="secondary" onPress={() => setEdit(null)}>
                   Cancel
+                </Button>
+              </Modal.Footer>
+            </Modal.Dialog>
+          </Modal.Container>
+        </Modal.Backdrop>
+      </Modal>
+
+      <Modal
+        isOpen={removeLockTarget !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setRemoveLockTarget(null)
+        }}
+      >
+        <Modal.Backdrop>
+          <Modal.Container>
+            <Modal.Dialog>
+              <Modal.Header>
+                <Modal.Heading>
+                  Remove {removeLockTarget?.protection === 'pin' ? 'PIN' : 'password'}?
+                </Modal.Heading>
+              </Modal.Header>
+              <Modal.Body className="grid gap-3">
+                <Typography type="body">
+                  {removeLockTarget?.name} will open without a{' '}
+                  {removeLockTarget?.protection === 'pin' ? 'PIN' : 'password'}. Enter the current one to
+                  confirm.
+                </Typography>
+                {removeLockTarget?.protection === 'pin' ? (
+                  <div className="grid gap-2">
+                    <Label>Current PIN</Label>
+                    <InputOTP
+                      aria-label="Current PIN"
+                      className="kivo-otp"
+                      maxLength={6}
+                      pattern={REGEXP_ONLY_DIGITS}
+                      value={removeLockSecret}
+                      onChange={setRemoveLockSecret}
+                    >
+                      <InputOTP.Group>
+                        <InputOTP.Slot index={0} />
+                        <InputOTP.Slot index={1} />
+                        <InputOTP.Slot index={2} />
+                        <InputOTP.Slot index={3} />
+                        <InputOTP.Slot index={4} />
+                        <InputOTP.Slot index={5} />
+                      </InputOTP.Group>
+                    </InputOTP>
+                    {removeLockError ? (
+                      <Typography className="font-semibold text-danger" role="alert" type="body-sm">
+                        {removeLockError}
+                      </Typography>
+                    ) : null}
+                  </div>
+                ) : (
+                  <TextField
+                    isInvalid={removeLockError !== null}
+                    type="password"
+                    value={removeLockSecret}
+                    onChange={setRemoveLockSecret}
+                  >
+                    <Label>Current password</Label>
+                    <Input fullWidth autoComplete="current-password" variant="secondary" />
+                    {removeLockError ? <FieldError>{removeLockError}</FieldError> : null}
+                  </TextField>
+                )}
+              </Modal.Body>
+              <Modal.Footer>
+                <Button variant="secondary" onPress={() => setRemoveLockTarget(null)}>
+                  Cancel
+                </Button>
+                <Button variant="danger" onPress={() => void handleRemoveLock()}>
+                  Remove lock
                 </Button>
               </Modal.Footer>
             </Modal.Dialog>

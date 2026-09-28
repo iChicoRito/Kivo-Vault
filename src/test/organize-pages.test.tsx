@@ -34,6 +34,7 @@ const collectionsMock = vi.hoisted(() => ({
   saveCollection: vi.fn(),
   deleteCollection: vi.fn(),
   verifyCollectionSecret: vi.fn(),
+  lockCollection: vi.fn(),
 }))
 
 const settingsMock = vi.hoisted(() => ({
@@ -845,6 +846,110 @@ describe('CollectionsPage', () => {
       expect(itemsMock.listItems).toHaveBeenCalledWith({ collectionId: LOCKED.id }),
     )
     expect(await screen.findByText('Meeting notes')).toBeInTheDocument()
+  })
+
+  async function unlockVaultRow() {
+    collectionsMock.listCollections.mockResolvedValue([{ ...LOCKED }])
+    collectionsMock.verifyCollectionSecret.mockResolvedValue(true)
+    itemsMock.listItems.mockResolvedValue([NOTE])
+    renderCollections({ collectionsView: 'list' })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Vault' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(
+      within(dialog).getByLabelText('Password', { selector: 'input[type="password"]' }),
+      { target: { value: 'open-sesame' } },
+    )
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Unlock' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }))
+    await screen.findByRole('button', { name: 'Vault' })
+  }
+
+  it('locks an unlocked collection again from its right-click menu', async () => {
+    collectionsMock.lockCollection.mockResolvedValue(undefined)
+    await unlockVaultRow()
+
+    await openRowMenu('Vault', 'Lock Vault')
+
+    await waitFor(() => expect(collectionsMock.lockCollection).toHaveBeenCalledWith(LOCKED.id))
+    // Opening it now asks for the password again.
+    itemsMock.listItems.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Vault' }))
+    expect(await screen.findByRole('button', { name: 'Unlock' })).toBeInTheDocument()
+    expect(itemsMock.listItems).not.toHaveBeenCalled()
+  })
+
+  it('locks the open collection from the Lock button inside it', async () => {
+    collectionsMock.lockCollection.mockResolvedValue(undefined)
+    collectionsMock.listCollections.mockResolvedValue([{ ...LOCKED }])
+    itemsMock.listItems.mockResolvedValue([NOTE])
+    renderCollections({ collectionsView: 'list' })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Vault' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(
+      within(dialog).getByLabelText('Password', { selector: 'input[type="password"]' }),
+      { target: { value: 'open-sesame' } },
+    )
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Unlock' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Lock' }))
+    await waitFor(() => expect(collectionsMock.lockCollection).toHaveBeenCalledWith(LOCKED.id))
+    // Back on the list, and the collection is closed again.
+    expect(await screen.findByRole('button', { name: 'Vault' })).toBeInTheDocument()
+    expect(screen.queryByText('Meeting notes')).not.toBeInTheDocument()
+  })
+
+  it('asks for the current PIN with PIN boxes when the lock is a PIN', async () => {
+    collectionsMock.listCollections.mockResolvedValue([{ ...LOCKED, protection: 'pin' }])
+    renderCollections({ collectionsView: 'list' })
+    await screen.findByRole('button', { name: 'Vault' })
+
+    await openRowMenu('Vault', 'Remove PIN from Vault')
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: 'Remove PIN?' })).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('Current PIN')).toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Current password')).not.toBeInTheDocument()
+  })
+
+  it('removes a collection lock from the right-click menu only with the current password', async () => {
+    collectionsMock.saveCollection.mockRejectedValueOnce(
+      new Error('The current password or PIN is not correct'),
+    )
+    collectionsMock.listCollections.mockResolvedValue([{ ...LOCKED }])
+    renderCollections({ collectionsView: 'list' })
+    await screen.findByRole('button', { name: 'Vault' })
+
+    await openRowMenu('Vault', 'Remove password from Vault')
+    const dialog = await screen.findByRole('dialog')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove lock' }))
+    expect(
+      await within(dialog).findByText('Enter the current password or PIN to change the lock.'),
+    ).toBeInTheDocument()
+    expect(collectionsMock.saveCollection).not.toHaveBeenCalled()
+
+    fireEvent.change(within(dialog).getByLabelText('Current password'), {
+      target: { value: 'wrong' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove lock' }))
+    expect(
+      await within(dialog).findByText('The current password or PIN is not correct.'),
+    ).toBeInTheDocument()
+
+    fireEvent.change(within(dialog).getByLabelText('Current password'), {
+      target: { value: 'open-sesame' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove lock' }))
+    await waitFor(() =>
+      expect(collectionsMock.saveCollection).toHaveBeenCalledWith({
+        id: LOCKED.id,
+        name: 'Vault',
+        icon: LOCKED.icon,
+        protection: 'none',
+        currentSecret: 'open-sesame',
+      }),
+    )
   })
 })
 

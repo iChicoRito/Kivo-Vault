@@ -23,6 +23,8 @@ export async function saveCollection(input: {
   icon?: string | null
   protection?: CollectionProtection
   secret?: string | null
+  /** The present password or PIN, needed to remove or change an existing lock. */
+  currentSecret?: string
 }): Promise<Collection> {
   const collection = await invoke<Collection>('save_collection', { input })
   notifyVaultChanged()
@@ -31,6 +33,12 @@ export async function saveCollection(input: {
 
 export async function verifyCollectionSecret(id: string, secret: string): Promise<boolean> {
   return invoke<boolean>('verify_collection_secret', { id, secret })
+}
+
+/** Closes an unlocked collection again, so its items hide until the next unlock. */
+export async function lockCollection(id: string): Promise<void> {
+  await invoke<void>('lock_collection', { id })
+  notifyVaultChanged()
 }
 
 export async function deleteCollection(id: string): Promise<void> {

@@ -194,6 +194,10 @@ pub struct CollectionInput {
     pub icon: Option<String>,
     pub protection: Option<String>,
     pub secret: Option<String>,
+    /// The collection's present password or PIN. Required to remove or change
+    /// the lock of a protected collection, even while it is unlocked.
+    #[serde(default)]
+    pub current_secret: Option<String>,
 }
 
 // The raw item row plus its optional file record, before tags and disk state join in.
@@ -2320,7 +2324,11 @@ fn save_collection_with_state(
         let connection = connection.as_mut().expect("checked above");
         // Renaming or changing the lock of a protected collection needs it open.
         if let Some(id) = input.id.as_deref() {
-            ensure_collection_accessible(connection, state, id)?;
+            // The right present secret proves access on its own, so a locked
+            // collection can have its lock removed without unlocking it first.
+            if !check_current_secret(connection, state, id, input)? {
+                ensure_collection_accessible(connection, state, id)?;
+            }
         }
         let key = encryption::key_if_enabled(connection, state.content_key())?;
         if let Some(key) = key.as_ref() {
@@ -2362,6 +2370,45 @@ fn save_collection_with_state(
         .map_err(|error| format!("Could not read the collection: {error}"))?;
 
     collection.ok_or_else(|| "Collection was not found".to_string())
+}
+
+pub(crate) const CURRENT_SECRET_WRONG: &str = "The current password or PIN is not correct";
+
+/// Removing or changing a collection's lock asks for its present secret, so
+/// someone at an unlocked app cannot quietly strip the protection. A rename
+/// alone (no protection in the input) does not ask. Returns true when the
+/// secret was checked and matched.
+fn check_current_secret(
+    connection: &Connection,
+    state: &DatabaseState,
+    id: &str,
+    input: &CollectionInput,
+) -> Result<bool, String> {
+    if input.protection.is_none() {
+        return Ok(false);
+    }
+    let hash: Option<Option<String>> = connection
+        .query_row(
+            "SELECT secret_hash FROM collections WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not read the collection: {error}"))?;
+    let Some(Some(hash)) = hash else {
+        return Ok(false);
+    };
+    state.check_attempt()?;
+    let matched = input
+        .current_secret
+        .as_deref()
+        .is_some_and(|secret| secret_matches(secret.trim(), &hash));
+    state.record_attempt(matched);
+    if matched {
+        Ok(true)
+    } else {
+        Err(CURRENT_SECRET_WRONG.to_string())
+    }
 }
 
 fn delete_collection_with_state(state: &DatabaseState, id: &str) -> Result<(), String> {
@@ -2804,6 +2851,12 @@ pub fn save_collection(
 #[tauri::command]
 pub fn delete_collection(id: String, state: State<'_, DatabaseState>) -> Result<(), String> {
     delete_collection_with_state(state.inner(), &id)
+}
+
+/// Closes a collection that was opened with its secret this session.
+#[tauri::command]
+pub fn lock_collection(id: String, state: State<'_, DatabaseState>) {
+    state.lock_collection(&id);
 }
 
 #[tauri::command]
@@ -4110,6 +4163,7 @@ mod tests {
                 icon: Some("  folder  ".to_string()),
                 protection: None,
                 secret: None,
+                current_secret: None,
             },
         )
         .expect("create collection");
@@ -4152,6 +4206,7 @@ mod tests {
                 icon: None,
                 protection: None,
                 secret: None,
+                current_secret: None,
             },
         )
         .expect("create collection");
@@ -4165,6 +4220,7 @@ mod tests {
                 icon: None,
                 protection: None,
                 secret: None,
+                current_secret: None,
             },
         )
         .expect("create second collection");
@@ -4178,6 +4234,7 @@ mod tests {
                 icon: None,
                 protection: None,
                 secret: None,
+                current_secret: None,
             },
         )
         .expect_err("blank name rejected");
@@ -4191,6 +4248,7 @@ mod tests {
                 icon: None,
                 protection: None,
                 secret: None,
+                current_secret: None,
             },
         )
         .expect_err("duplicate name rejected");
@@ -4205,6 +4263,7 @@ mod tests {
                 icon: None,
                 protection: None,
                 secret: None,
+                current_secret: None,
             },
         )
         .expect("same name rename");
@@ -4218,6 +4277,7 @@ mod tests {
                 icon: Some("star".to_string()),
                 protection: None,
                 secret: None,
+                current_secret: None,
             },
         )
         .expect("rename collection");
@@ -4232,6 +4292,7 @@ mod tests {
                 icon: None,
                 protection: None,
                 secret: None,
+                current_secret: None,
             },
         )
         .expect_err("duplicate rename rejected");
@@ -4245,6 +4306,7 @@ mod tests {
                 icon: None,
                 protection: None,
                 secret: None,
+                current_secret: None,
             },
         )
         .expect_err("missing collection rejected");
@@ -4264,6 +4326,7 @@ mod tests {
                 icon: None,
                 protection: None,
                 secret: None,
+                current_secret: None,
             },
         )
         .expect("create collection");
@@ -4588,6 +4651,7 @@ mod tests {
             icon: None,
             protection: None,
             secret: None,
+            current_secret: None,
         }
     }
 
@@ -4703,12 +4767,18 @@ mod tests {
                     icon: None,
                     protection: Some("none".to_string()),
                     secret: None,
+                    current_secret: None,
                 },
             )
             .map(|_| ())
             .unwrap_err(),
         ] {
-            assert_eq!(error, crate::database::COLLECTION_LOCKED);
+            // Removing the lock is refused for the missing current password
+            // before the locked check; either refusal keeps it protected.
+            assert!(
+                error == crate::database::COLLECTION_LOCKED || error == CURRENT_SECRET_WRONG,
+                "{error}"
+            );
         }
 
         // Moving a loose item in reads nothing, so it is allowed while locked.
@@ -4752,6 +4822,7 @@ mod tests {
                 icon: None,
                 protection: None,
                 secret: None,
+                current_secret: None,
             },
         )
         .expect("rename");
@@ -4773,6 +4844,25 @@ mod tests {
         input.protection = Some("password".to_string());
         input.secret = Some("secret-pass".to_string());
         let created = save_collection_with_state(&state, &input).expect("create protected");
+        // Locked again, as after an app lock: the right password alone is enough.
+        state.clear_unlocked_collections();
+
+        // Unlocked is not enough: removing the lock needs the present password.
+        for wrong in [None, Some("guess".to_string())] {
+            let error = save_collection_with_state(
+                &state,
+                &CollectionInput {
+                    id: Some(created.id.clone()),
+                    name: "Clear me".to_string(),
+                    icon: None,
+                    protection: Some("none".to_string()),
+                    secret: None,
+                    current_secret: wrong,
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error, CURRENT_SECRET_WRONG);
+        }
 
         let cleared = save_collection_with_state(
             &state,
@@ -4782,6 +4872,7 @@ mod tests {
                 icon: None,
                 protection: Some("none".to_string()),
                 secret: None,
+                current_secret: Some("secret-pass".to_string()),
             },
         )
         .expect("clear protection");

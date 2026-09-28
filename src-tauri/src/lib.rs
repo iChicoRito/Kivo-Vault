@@ -115,6 +115,7 @@ pub fn run() {
             vault::save_collection,
             vault::delete_collection,
             vault::verify_collection_secret,
+            vault::lock_collection,
             vault::list_tags,
             vault::pick_file,
             vault::pick_files,

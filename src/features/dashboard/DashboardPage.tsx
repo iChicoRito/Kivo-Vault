@@ -97,8 +97,28 @@ function RowsSkeleton({ rows = 4 }: { rows?: number }) {
   )
 }
 
-function EmptyNote({ children }: { children: ReactNode }) {
-  return <p className="m-0 py-6 text-center text-sm text-muted">{children}</p>
+type EmptyCopy = { icon: IconSvgElement; title: string; description: string }
+
+// A small version of the page empty states: icon, title and one line.
+function EmptyNote({ icon, title, description }: EmptyCopy) {
+  return (
+    <EmptyState className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-default px-4 py-8 text-center">
+      <span
+        aria-hidden="true"
+        className="flex size-10 items-center justify-center rounded-full bg-background-tertiary text-muted"
+      >
+        <HugeiconsIcon icon={icon} size={18} />
+      </span>
+      <div className="grid gap-1">
+        <Typography align="center" type="body" weight="medium">
+          {title}
+        </Typography>
+        <Typography align="center" color="muted" type="body-sm">
+          {description}
+        </Typography>
+      </div>
+    </EmptyState>
+  )
 }
 
 function ItemRows({
@@ -107,10 +127,10 @@ function ItemRows({
   onOpen,
 }: {
   items: ItemSummary[]
-  empty: string
+  empty: EmptyCopy
   onOpen: (id: string) => void
 }) {
-  if (items.length === 0) return <EmptyNote>{empty}</EmptyNote>
+  if (items.length === 0) return <EmptyNote {...empty} />
 
   return (
     <ul className="-mx-2 m-0 grid list-none p-0">
@@ -419,7 +439,15 @@ export default function DashboardPage() {
               title="Recent"
             >
               {ready ? (
-                <ItemRows empty="Nothing edited yet." items={recent} onOpen={setOpenItemId} />
+                <ItemRows
+                  empty={{
+                    icon: NoteEditIcon,
+                    title: 'Nothing edited yet.',
+                    description: 'Notes, links and files you change show up here.',
+                  }}
+                  items={recent}
+                  onOpen={setOpenItemId}
+                />
               ) : (
                 <RowsSkeleton />
               )}
@@ -432,7 +460,15 @@ export default function DashboardPage() {
               title="Favorites"
             >
               {ready ? (
-                <ItemRows empty="No favorites yet." items={favorites} onOpen={setOpenItemId} />
+                <ItemRows
+                  empty={{
+                    icon: StarIcon,
+                    title: 'No favorites yet.',
+                    description: 'Star an item to keep it close at hand.',
+                  }}
+                  items={favorites}
+                  onOpen={setOpenItemId}
+                />
               ) : (
                 <RowsSkeleton />
               )}
@@ -447,7 +483,11 @@ export default function DashboardPage() {
               {!ready ? (
                 <RowsSkeleton />
               ) : topCollections.length === 0 ? (
-                <EmptyNote>No collections yet.</EmptyNote>
+                <EmptyNote
+                  description="Group related items into a collection."
+                  icon={FolderOpenIcon}
+                  title="No collections yet."
+                />
               ) : (
                 <ul className="-mx-2 m-0 grid list-none p-0">
                   {topCollections.map((collection) => (

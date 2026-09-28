@@ -27,6 +27,13 @@ import { usePreferences } from '../../app/preferences'
 type Mode = 'loading' | 'off' | 'on' | 'error'
 
 const AUTO_LOCK_MINUTES = [0, 5, 15, 30, 60]
+const AUTO_LOCK_HINTS: Record<number, string> = {
+  0: 'Stays open until you lock it',
+  5: 'Best on a shared computer',
+  15: 'A good default',
+  30: 'For longer work sessions',
+  60: 'Only on a private device',
+}
 
 const EMPTY_PASSWORD_MESSAGE = 'Enter a Master Password.'
 const EMPTY_CURRENT_MESSAGE = 'Enter your current Master Password.'
@@ -302,9 +309,8 @@ export default function AppLockSettings() {
             <Separator />
 
             <RadioGroup
-              className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3"
+              className="grid gap-3"
               name="auto-lock"
-              orientation="horizontal"
               variant="secondary"
               value={String(preferences.autoLockMinutes)}
               onChange={(value) => {
@@ -320,15 +326,25 @@ export default function AppLockSettings() {
                   Locks Kivo when you have not used it for a while.
                 </Description>
               </div>
-              <div className="flex flex-wrap gap-x-5 gap-y-2">
+              {/* Each choice is a card, like the onboarding choices, so the time
+                  and what it suits read at a glance. */}
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
                 {AUTO_LOCK_MINUTES.map((minutes) => (
-                  <Radio className="min-h-11" key={minutes} value={String(minutes)}>
-                    <Radio.Content>
+                  <Radio
+                    key={minutes}
+                    value={String(minutes)}
+                    className="relative mt-0! flex min-h-11 cursor-pointer flex-col gap-1 rounded-2xl border border-default bg-surface p-3 transition-colors duration-200 ease-out hover:bg-surface-hover data-[selected=true]:border-accent data-[selected=true]:bg-accent/5 data-[focus-visible=true]:outline-2 data-[focus-visible=true]:outline-offset-2 data-[focus-visible=true]:outline-focus"
+                  >
+                    {/* The overlay stretches the click area over the whole card. */}
+                    <Radio.Content className="static after:absolute after:inset-0 after:rounded-2xl">
                       <Radio.Control>
                         <Radio.Indicator />
                       </Radio.Control>
-                      {minutes ? `${minutes} min` : 'Never'}
+                      <span className="font-semibold">
+                        {minutes ? `${minutes} min` : 'Never'}
+                      </span>
                     </Radio.Content>
+                    <Description className="text-xs">{AUTO_LOCK_HINTS[minutes]}</Description>
                   </Radio>
                 ))}
               </div>

@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Input, Label, Skeleton, Tabs, TextField } from '@heroui/react'
+import {
+  Alert,
+  Button,
+  Card,
+  EmptyState,
+  Input,
+  Label,
+  Skeleton,
+  Tabs,
+  TextField,
+  Typography,
+} from '@heroui/react'
 import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react'
 import {
   Delete02Icon,
@@ -250,6 +261,25 @@ export function TrashPage() {
             </ul>
           </Card>
 
+          {loadState === 'ready' && items.length === 0 ? (
+            <EmptyState className="flex min-h-[32rem] flex-col items-center justify-center gap-5 rounded-3xl border border-dashed border-default px-6 py-16 text-center">
+              <span
+                aria-hidden="true"
+                className="flex size-14 items-center justify-center rounded-full bg-background-tertiary text-muted"
+              >
+                <HugeiconsIcon icon={Delete02Icon} size={24} />
+              </span>
+              <div className="grid max-w-lg gap-2">
+                <Typography align="center" type="h3">
+                  Trash is empty.
+                </Typography>
+                <Typography align="center" color="muted" type="body">
+                  Deleted notes, sources, and files wait here until you restore or remove them.
+                </Typography>
+              </div>
+            </EmptyState>
+          ) : (
+          <>
           <div className="flex flex-wrap items-end justify-between gap-3">
             <TextField className="w-full max-w-sm" value={query} onChange={setQuery}>
               <Label>Search Trash</Label>
@@ -313,6 +343,8 @@ export function TrashPage() {
               }}
             />
           ) : null}
+          </>
+          )}
         </>
       )}
 

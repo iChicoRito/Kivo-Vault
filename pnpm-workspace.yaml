@@ -1,0 +1,4 @@
+allowBuilds:
+  # Pulled in by Remotion's bundler. Its postinstall only checks the binary, which pnpm already
+  # installs through esbuild's optional platform packages.
+  esbuild: false

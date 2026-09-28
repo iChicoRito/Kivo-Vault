@@ -12,7 +12,9 @@
     "tauri": "tauri",
     "landing:dev": "vite --config vite.landing.config.ts",
     "landing:build": "vite build --config vite.landing.config.ts",
-    "landing:preview": "vite preview --config vite.landing.config.ts"
+    "landing:preview": "vite preview --config vite.landing.config.ts",
+    "video:dev": "node video/sounds.mjs && remotion studio video/index.ts --public-dir video/public",
+    "video:render": "node video/sounds.mjs && remotion render video/index.ts KivoPromo video/out/kivo-promo.mp4 --public-dir video/public"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
@@ -42,6 +44,8 @@
     "thesvg": "^3.3.8"
   },
   "devDependencies": {
+    "@remotion/cli": "4.0.529",
+    "@remotion/google-fonts": "4.0.529",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2.11.4",
     "@testing-library/dom": "^10.4.2",
@@ -53,6 +57,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "jsdom": "^30.0.1",
+    "remotion": "4.0.529",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",

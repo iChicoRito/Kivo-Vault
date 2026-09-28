@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 aes-gcm = "0.10"
+arboard = { version = "3.6.1", default-features = false }
 argon2 = "0.6"
 base64 = "0.23"
 getrandom = "0.2"

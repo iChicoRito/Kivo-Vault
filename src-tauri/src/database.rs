@@ -190,6 +190,11 @@ impl DatabaseState {
         connection
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(|error| format!("Could not enable foreign keys: {error}"))?;
+        // Deleted or overwritten rows are zeroed on disk, so removed plaintext
+        // does not linger in free pages.
+        connection
+            .pragma_update(None, "secure_delete", "ON")
+            .map_err(|error| format!("Could not enable secure delete: {error}"))?;
         apply_migrations(&mut connection)
             .map_err(|error| format!("Could not migrate local database: {error}"))?;
         crate::encryption::recover_files(&connection, &self.files_dir)?;

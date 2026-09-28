@@ -19,7 +19,7 @@ import {
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 
-import { copyText } from '../../lib/clipboard'
+import { copySecret } from '../../lib/clipboard'
 import { notifyError, notifySuccess } from '../../lib/feedback'
 import {
   DEFAULT_PASSWORD_OPTIONS,
@@ -74,7 +74,7 @@ export function PasswordGeneratorPanel({ onUsePassword }: PasswordGeneratorPanel
 
   async function handleCopy() {
     try {
-      await copyText(value)
+      await copySecret(value)
       notifySuccess('Password copied')
     } catch {
       notifyError('Kivo could not copy the password. Try again.')

@@ -27,16 +27,29 @@ export function LockProvider({ children, initialLocked = false, autoLockMinutes 
 
   useEffect(() => {
     if (locked || !minutes) return
+    const idleMs = minutes * 60_000
     let timeout: ReturnType<typeof setTimeout>
+    let lastActivity = Date.now()
     const reset = () => {
+      lastActivity = Date.now()
       clearTimeout(timeout)
-      timeout = setTimeout(() => void lock(), minutes * 60_000)
+      timeout = setTimeout(() => void lock(), idleMs)
     }
+    // Timers pause while the computer sleeps, so check the real idle time when
+    // the window shows again. Only input counts as activity, not focus.
+    const checkIdle = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastActivity >= idleMs) void lock()
+    }
+    const events = ['pointerdown', 'keydown', 'scroll']
     reset()
-    for (const name of ['pointerdown', 'keydown', 'focus', 'scroll']) window.addEventListener(name, reset, true)
+    for (const name of events) window.addEventListener(name, reset, true)
+    document.addEventListener('visibilitychange', checkIdle)
+    window.addEventListener('focus', checkIdle)
     return () => {
       clearTimeout(timeout)
-      for (const name of ['pointerdown', 'keydown', 'focus', 'scroll']) window.removeEventListener(name, reset, true)
+      for (const name of events) window.removeEventListener(name, reset, true)
+      document.removeEventListener('visibilitychange', checkIdle)
+      window.removeEventListener('focus', checkIdle)
     }
   }, [locked, minutes, lock])
 

@@ -41,6 +41,28 @@ it('activity resets inactivity deadline, and zero disables automatic lock', asyn
   expect(screen.getByText('Vault content')).toBeInTheDocument()
 })
 
+it('locks on return from sleep when the idle time has passed, and focus is not activity', async () => {
+  vi.useFakeTimers()
+  getTauriInvoke().mockResolvedValue(undefined)
+  render(<LockProvider initialLocked={false} autoLockMinutes={5}><Probe /></LockProvider>)
+
+  // Focus alone must not push the deadline back.
+  await act(async () => { vi.advanceTimersByTime(4 * 60_000); fireEvent.focus(window) })
+  await act(async () => { vi.advanceTimersByTime(60_000) })
+  expect(screen.queryByText('Vault content')).not.toBeInTheDocument()
+})
+
+it('checks real elapsed time when the window returns, since timers pause during sleep', async () => {
+  vi.useFakeTimers()
+  getTauriInvoke().mockResolvedValue(undefined)
+  render(<LockProvider initialLocked={false} autoLockMinutes={5}><Probe /></LockProvider>)
+
+  // The clock jumps ahead without any timer firing, as after sleep.
+  vi.setSystemTime(Date.now() + 10 * 60_000)
+  await act(async () => { fireEvent.focus(window) })
+  expect(screen.queryByText('Vault content')).not.toBeInTheDocument()
+})
+
 it('hides the routes behind the unlock page while locked, then reveals them after unlock', async () => {
   getTauriInvoke().mockImplementation((command: string) => Promise.resolve(
     command === 'read_protection_state' ? { lockEnabled: true, encryptionEnabled: false } :

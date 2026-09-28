@@ -19,7 +19,7 @@ import {
   type CredentialInput,
   type CredentialSummary,
 } from '../data/passwords'
-import { copyText } from '../lib/clipboard'
+import { copySecret, copyText } from '../lib/clipboard'
 import { getTauriInvoke } from './setup'
 
 const notifyVaultChanged = vi.hoisted(() => vi.fn())
@@ -186,6 +186,22 @@ describe('passwords data contract', () => {
       ids: [CREDENTIAL.id],
     })
     expect(notifyVaultChanged).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('copySecret', () => {
+  it('hands the password to the Rust side in the desktop app', async () => {
+    const tauriWindow = window as Window & { __TAURI_INTERNALS__?: unknown }
+    const original = tauriWindow.__TAURI_INTERNALS__
+    tauriWindow.__TAURI_INTERNALS__ = { invoke: () => undefined }
+    getTauriInvoke().mockResolvedValue(undefined)
+
+    try {
+      await expect(copySecret('s3cret')).resolves.toBeUndefined()
+      expect(getTauriInvoke()).toHaveBeenCalledWith('copy_secret', { text: 's3cret' })
+    } finally {
+      tauriWindow.__TAURI_INTERNALS__ = original
+    }
   })
 })
 

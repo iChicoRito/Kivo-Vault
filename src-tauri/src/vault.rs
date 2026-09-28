@@ -837,6 +837,10 @@ fn write_item(
                 return Err("Source items need a web address".to_string());
             }
 
+            if !is_web_url(url) {
+                return Err("Web addresses must start with http:// or https://".to_string());
+            }
+
             (input.content.clone(), Some(url.to_string()))
         }
         _ => (stored_content.clone(), stored_url),
@@ -2134,8 +2138,30 @@ fn managed_file_path_with_state(state: &DatabaseState, id: &str) -> Result<PathB
     Ok(path)
 }
 
+/// Only web addresses are handed to the OS. Other schemes such as `file:` or
+/// `ms-msdt:` can start programs.
+fn is_web_url(url: &str) -> bool {
+    let url = url.trim().to_ascii_lowercase();
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
+/// File types Windows runs as programs or scripts when opened.
+const RUNNABLE_EXTENSIONS: &[&str] = &[
+    "exe", "com", "bat", "cmd", "msi", "msp", "msix", "appx", "appinstaller", "hta", "lnk",
+    "url", "scr", "pif", "cpl", "js", "jse", "vbs", "vbe", "wsf", "wsh", "ps1", "psm1", "reg",
+    "jar", "application", "gadget", "inf", "settingcontent-ms", "library-ms", "search-ms",
+];
+
+fn is_runnable(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            RUNNABLE_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+        })
+}
+
 fn write_temp_file(id: &str, original_name: Option<&str>, bytes: &[u8]) -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join("kivo-decrypted");
+    let dir = encryption::temp_dir();
     fs::create_dir_all(&dir)
         .map_err(|error| format!("Could not prepare a temporary copy: {error}"))?;
     let path = dir.join(temp_file_name(id, original_name.unwrap_or("file")));
@@ -2177,6 +2203,10 @@ fn source_url_with_state(state: &DatabaseState, id: &str) -> Result<String, Stri
 
     if url.is_empty() {
         return Err("This source has no web address".to_string());
+    }
+
+    if !is_web_url(url) {
+        return Err("Only http and https addresses can be opened".to_string());
     }
 
     Ok(url.to_string())
@@ -2487,6 +2517,12 @@ pub fn open_item_file(
 ) -> Result<(), String> {
     let path = managed_file_path_with_state(state.inner(), &id)?;
 
+    if is_runnable(&path) {
+        return Err(
+            "Kivo does not open programs or scripts. Use Show in folder instead.".to_string(),
+        );
+    }
+
     app.opener()
         .open_path(path.to_string_lossy().to_string(), None::<&str>)
         .map_err(|error| format!("Could not open the file: {error}"))?;
@@ -2595,6 +2631,56 @@ mod tests {
             is_favorite: None,
             is_pinned: None,
         }
+    }
+
+    #[test]
+    fn opening_a_source_refuses_a_stored_non_web_address() {
+        let vault = TempVault::new("source-scheme");
+        let state = vault.state();
+        let saved = save_item_with_state(&state, &source_input("Site", "https://example.com"))
+            .expect("save source");
+
+        assert_eq!(
+            source_url_with_state(&state, &saved.id).expect("web address opens"),
+            "https://example.com"
+        );
+
+        // An import or an older version could have stored any scheme.
+        state
+            .require_connection()
+            .expect("lock connection")
+            .as_ref()
+            .expect("connection")
+            .execute(
+                "UPDATE items SET url = 'ms-msdt:/id PCWDiagnostic' WHERE id = ?1",
+                params![saved.id],
+            )
+            .expect("plant url");
+
+        assert_eq!(
+            source_url_with_state(&state, &saved.id).expect_err("scheme refused"),
+            "Only http and https addresses can be opened"
+        );
+    }
+
+    #[test]
+    fn runnable_file_types_are_recognized() {
+        for name in ["a.exe", "b.BAT", "c.lnk", "d.ps1", "e.hta", "f.JS", "g.url"] {
+            assert!(is_runnable(Path::new(name)), "{name}");
+        }
+        for name in ["a.pdf", "b.png", "c.txt", "d.docx", "noextension"] {
+            assert!(!is_runnable(Path::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn clear_temp_files_removes_decrypted_copies() {
+        let path = write_temp_file("clear-test", Some("secret.txt"), b"plaintext").unwrap();
+        assert!(path.is_file());
+
+        encryption::clear_temp_files();
+
+        assert!(!path.exists());
     }
 
     fn seed_collection(state: &DatabaseState, id: &str, name: &str, sort_order: i64) {
@@ -2932,6 +3018,12 @@ mod tests {
         let error = save_item_with_state(&state, &source_input("Article", "   "))
             .expect_err("blank url rejected");
         assert_eq!(error, "Source items need a web address");
+
+        for url in ["file:///C:/Windows/System32/calc.exe", "ms-msdt:/id x", "javascript:x"] {
+            let error = save_item_with_state(&state, &source_input("Bad", url))
+                .expect_err("non-web url rejected");
+            assert_eq!(error, "Web addresses must start with http:// or https://");
+        }
 
         let saved = save_item_with_state(&state, &note_input("Stable", "body")).expect("save note");
         let mut change = note_input("Stable", "body");

@@ -284,6 +284,17 @@ pub fn unlock(connection: &Connection, password: &str) -> Result<Option<[u8; 32]
     unwrap_vault_key(&salt, &wrapped, password).map(Some)
 }
 
+/// Where decrypted copies of encrypted files go when the user opens them.
+pub fn temp_dir() -> PathBuf {
+    std::env::temp_dir().join("kivo-decrypted")
+}
+
+/// Deletes every decrypted temporary copy. A copy still open in another app may
+/// stay behind on Windows; the next lock or app start tries again.
+pub fn clear_temp_files() {
+    let _ = fs::remove_dir_all(temp_dir());
+}
+
 fn journal(files_dir: &Path) -> PathBuf {
     files_dir.with_extension("content-conversion")
 }
@@ -543,6 +554,11 @@ pub fn enable(
         Ok(key)
     })();
     recover_files(connection, files_dir)?;
+    if outcome.is_ok() {
+        // Rewrites the file so plaintext written before secure_delete was on
+        // leaves no copy in free pages. A failure here does not undo encryption.
+        let _ = connection.execute_batch("VACUUM");
+    }
     outcome
 }
 
@@ -686,6 +702,7 @@ pub fn unlock_content_vault(
 
 #[tauri::command]
 pub fn lock_content_vault(state: State<'_, DatabaseState>) -> Result<(), String> {
+    clear_temp_files();
     state.content_key().clear()
 }
 

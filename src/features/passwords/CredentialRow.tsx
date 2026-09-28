@@ -14,7 +14,7 @@ import {
 import { ItemCard, type ItemCardAction } from '../../components/items/ItemCard'
 import { ConfirmDialog } from '../../components/items/dialogs'
 import { CredentialAvatar } from './CredentialAvatar'
-import { copyText } from '../../lib/clipboard'
+import { copySecret, copyText } from '../../lib/clipboard'
 import { notifyError, notifySuccess } from '../../lib/feedback'
 import {
   deleteCredentialsPermanently,
@@ -67,7 +67,7 @@ export function CredentialRow({
   async function copyPassword() {
     try {
       const value = (await loadCredential(credential.id)).password
-      await copyText(value)
+      await copySecret(value)
       notifySuccess('Password copied')
     } catch {
       notifyError('Kivo could not copy this password. Try again.')

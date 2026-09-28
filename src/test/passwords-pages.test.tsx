@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getTauriInvoke } from './setup'
 import type { Credential, CredentialInput, CredentialSummary } from '../data/passwords'
 
-const clipboardMock = vi.hoisted(() => ({ copyText: vi.fn() }))
+const clipboardMock = vi.hoisted(() => ({ copyText: vi.fn(), copySecret: vi.fn() }))
 
 const feedbackMock = vi.hoisted(() => ({
   notifySuccess: vi.fn(),
@@ -90,6 +90,8 @@ beforeEach(() => {
   handlers = {}
   clipboardMock.copyText.mockReset()
   clipboardMock.copyText.mockResolvedValue(undefined)
+  clipboardMock.copySecret.mockReset()
+  clipboardMock.copySecret.mockResolvedValue(undefined)
   invoke.mockReset()
   invoke.mockImplementation((command: string, args?: Record<string, unknown>) => {
     const handler = handlers[command]
@@ -348,7 +350,7 @@ describe('PasswordsPage row actions', () => {
     openRowMenu('GitHub')
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Copy password' }))
 
-    await waitFor(() => expect(clipboardMock.copyText).toHaveBeenCalledWith('s3cret-value'))
+    await waitFor(() => expect(clipboardMock.copySecret).toHaveBeenCalledWith('s3cret-value'))
   })
 
   it('copies the username from the row menu', async () => {
@@ -647,15 +649,15 @@ describe('Password Generator tab', () => {
     await openGeneratorTab()
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy Password' }))
-    await waitFor(() => expect(clipboardMock.copyText).toHaveBeenCalledTimes(1))
-    const first = clipboardMock.copyText.mock.calls[0][0] as string
+    await waitFor(() => expect(clipboardMock.copySecret).toHaveBeenCalledTimes(1))
+    const first = clipboardMock.copySecret.mock.calls[0][0] as string
     expect(first.length).toBeGreaterThanOrEqual(8)
 
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate password' }))
     fireEvent.click(screen.getByRole('button', { name: 'Copy Password' }))
 
-    await waitFor(() => expect(clipboardMock.copyText).toHaveBeenCalledTimes(2))
-    const second = clipboardMock.copyText.mock.calls[1][0] as string
+    await waitFor(() => expect(clipboardMock.copySecret).toHaveBeenCalledTimes(2))
+    const second = clipboardMock.copySecret.mock.calls[1][0] as string
     expect(second).not.toBe(first)
   })
 

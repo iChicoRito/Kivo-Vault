@@ -8,6 +8,19 @@ mod portability;
 mod security;
 mod vault;
 
+/// Lives here because it touches both backup and the password vault, and the
+/// integration tests compile `backup.rs` without `passwords.rs`.
+#[tauri::command]
+fn restore_backup(
+    path: String,
+    state: tauri::State<'_, database::DatabaseState>,
+    vault: tauri::State<'_, passwords::VaultKeyState>,
+) -> Result<backup::RestoreSummary, String> {
+    // The restored database has its own vault salt, so the old key must not stay loaded.
+    vault.clear();
+    backup::restore_into(state.inner(), std::path::Path::new(&path))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -19,6 +32,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             use tauri::Manager;
+
+            // Decrypted copies left by the last session must not outlive it.
+            encryption::clear_temp_files();
 
             let data_dir = app.path().app_local_data_dir()?;
             let database =
@@ -58,7 +74,7 @@ pub fn run() {
             backup::create_backup_now,
             backup::pick_backup_source,
             backup::inspect_backup,
-            backup::restore_backup,
+            restore_backup,
             portability::pick_save_file,
             portability::pick_folder_destination,
             portability::export_note_markdown,
@@ -110,6 +126,7 @@ pub fn run() {
             passwords::trash_credentials,
             passwords::restore_credentials,
             passwords::delete_credentials_permanently,
+            passwords::copy_secret,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kivo")

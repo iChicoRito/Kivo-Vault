@@ -1,11 +1,15 @@
 use std::fs;
 use std::io::Read;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use reqwest::blocking::Client;
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
+use reqwest::redirect::Policy;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
@@ -39,10 +43,98 @@ fn cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Plain client for tests against a local HTTP server.
+#[cfg(test)]
 fn client() -> Result<Client, String> {
     Client::builder()
         .timeout(Duration::from_secs(TIMEOUT_SECONDS))
         .user_agent(USER_AGENT)
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+/// True for addresses on the open internet. Loopback, private, link-local,
+/// shared (CGNAT), multicast and unspecified addresses are refused so a saved
+/// site can never make Kivo talk to the user's own machine or network.
+fn is_public(ip: IpAddr) -> bool {
+    let ip = match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(v6),
+        },
+        other => other,
+    };
+
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                || (a == 100 && (64..128).contains(&b)))
+        }
+        IpAddr::V6(v6) => {
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local())
+        }
+    }
+}
+
+fn is_ip_literal(host: &str) -> bool {
+    host.trim_matches(['[', ']']).parse::<IpAddr>().is_ok()
+}
+
+/// Resolves names like the system does, then drops every non-public address.
+/// Every request goes through it, including redirects and icon links on other
+/// hosts, so a name that points at 127.0.0.1 is refused at connect time.
+struct PublicResolver;
+
+impl Resolve for PublicResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+
+        // ponytail: blocking lookup on reqwest's own runtime thread; each icon
+        // fetch builds its own client, so only that fetch waits.
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = (host.as_str(), 0)
+                .to_socket_addrs()?
+                .filter(|addr| is_public(addr.ip()))
+                .collect();
+
+            if addrs.is_empty() {
+                return Err("The site has no public address".into());
+            }
+
+            Ok::<Addrs, Box<dyn std::error::Error + Send + Sync>>(Box::new(addrs.into_iter()))
+        })
+    }
+}
+
+/// The client used for real sites: HTTPS only, public addresses only, and at
+/// most five redirects, none of them to a bare IP address.
+fn public_client() -> Result<Client, String> {
+    Client::builder()
+        .timeout(Duration::from_secs(TIMEOUT_SECONDS))
+        .user_agent(USER_AGENT)
+        .https_only(true)
+        .dns_resolver(Arc::new(PublicResolver))
+        .redirect(Policy::custom(|attempt| {
+            let to_ip = attempt.url().host_str().is_none_or(is_ip_literal);
+
+            if to_ip || attempt.previous().len() >= 5 {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
         .build()
         .map_err(|error| error.to_string())
 }
@@ -77,7 +169,11 @@ fn normalize_host(raw: &str) -> Option<String> {
         return None;
     }
 
-    if host != "localhost" && host.split('.').any(|label| label.is_empty()) {
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || is_ip_literal(&host)
+        || host.split('.').any(|label| label.is_empty())
+    {
         return None;
     }
 
@@ -213,12 +309,19 @@ fn icon_href(html: &str) -> Option<String> {
 fn resolve_href(base: &str, href: &str) -> Option<String> {
     let href = href.trim();
 
-    if href.starts_with("https://") || href.starts_with("http://") {
-        return Some(href.to_string());
+    // A link to another host must be HTTPS and name a host, not an IP address.
+    let other_host = href
+        .strip_prefix("https://")
+        .or_else(|| href.strip_prefix("//"));
+
+    if let Some(rest) = other_host {
+        normalize_host(rest)?;
+        return Some(format!("https://{rest}"));
     }
 
-    if let Some(rest) = href.strip_prefix("//") {
-        return Some(format!("https://{rest}"));
+    if href.contains(':') && !href.starts_with('/') {
+        // http:, data:, javascript: and other schemes.
+        return None;
     }
 
     if let Some(rest) = href.strip_prefix('/') {
@@ -271,7 +374,7 @@ fn resolve_icon(app: &AppHandle, host: &str) -> Option<String> {
         }
     }
 
-    let client = client().ok()?;
+    let client = public_client().ok()?;
     let (mime, bytes) = fetch_icon_at(&client, &format!("https://{host}"))?;
 
     let _ = fs::write(&path, &bytes);
@@ -341,7 +444,69 @@ mod tests {
             normalize_host("github.com:8443"),
             Some("github.com".to_string())
         );
-        assert_eq!(normalize_host("localhost"), Some("localhost".to_string()));
+    }
+
+    #[test]
+    fn rejects_local_and_ip_hosts() {
+        for host in [
+            "localhost",
+            "app.localhost",
+            "127.0.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "https://10.0.0.1:8080/x",
+        ] {
+            assert_eq!(normalize_host(host), None, "{host}");
+        }
+    }
+
+    #[test]
+    fn only_public_addresses_pass() {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(!is_public(ip.parse().unwrap()), "{ip}");
+        }
+
+        assert!(is_public("8.8.8.8".parse().unwrap()));
+        assert!(is_public("2606:4700::1111".parse().unwrap()));
+    }
+
+    #[test]
+    fn refuses_unsafe_icon_links() {
+        let base = "https://a.com";
+
+        assert_eq!(resolve_href(base, "http://cdn.com/i.png"), None);
+        assert_eq!(resolve_href(base, "https://127.0.0.1/i.png"), None);
+        assert_eq!(resolve_href(base, "//localhost/i.png"), None);
+        assert_eq!(resolve_href(base, "data:image/png;base64,AAAA"), None);
+        assert_eq!(
+            resolve_href(base, "https://cdn.com/i.png"),
+            Some("https://cdn.com/i.png".to_string())
+        );
+    }
+
+    #[test]
+    fn public_client_refuses_a_local_address() {
+        let base = serve(vec![(
+            "/favicon.ico".to_string(),
+            200,
+            "image/png",
+            PNG.to_vec(),
+        )]);
+        let client = public_client().unwrap();
+
+        assert!(fetch_icon_at(&client, &base).is_none());
     }
 
     #[test]

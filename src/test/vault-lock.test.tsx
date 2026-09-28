@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getTauriInvoke } from './setup'
 
-const clipboardMock = vi.hoisted(() => ({ copyText: vi.fn() }))
+const clipboardMock = vi.hoisted(() => ({ copyText: vi.fn(), copySecret: vi.fn() }))
 
 const feedbackMock = vi.hoisted(() => ({
   notifySuccess: vi.fn(),

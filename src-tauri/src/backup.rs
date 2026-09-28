@@ -705,11 +705,3 @@ pub fn create_backup_now(
 pub fn inspect_backup(path: String) -> Result<BackupInfo, String> {
     Ok(inspect_backup_at(Path::new(&path)))
 }
-
-#[tauri::command]
-pub fn restore_backup(
-    path: String,
-    state: State<'_, DatabaseState>,
-) -> Result<RestoreSummary, String> {
-    restore_into(state.inner(), Path::new(&path))
-}

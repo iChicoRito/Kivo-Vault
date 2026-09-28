@@ -335,7 +335,27 @@ fn new_id(connection: &Connection) -> Result<String, String> {
 
 // Imported items keep their collection name. A missing collection is created so
 // the name survives the round trip instead of being dropped.
-fn resolve_collection(connection: &Connection, name: &str) -> Result<String, String> {
+fn resolve_collection(
+    connection: &Connection,
+    name: &str,
+    key: Option<&[u8; 32]>,
+) -> Result<String, String> {
+    // Sealed names cannot be matched in SQL, so compare the decrypted ones.
+    if let Some(key) = key {
+        let mut statement = connection
+            .prepare("SELECT id, name_secret FROM collections WHERE name_secret IS NOT NULL")
+            .map_err(|error| format!("Could not read collections: {error}"))?;
+        let sealed = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)))
+            .map_err(|error| format!("Could not read collections: {error}"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| format!("Could not read collections: {error}"))?;
+        for (id, bytes) in sealed {
+            if encryption::open_collection_name(key, &id, &bytes)? == name {
+                return Ok(id);
+            }
+        }
+    }
     if let Some(id) = connection
         .query_row(
             "SELECT id FROM collections WHERE name = ?1",
@@ -366,7 +386,7 @@ fn insert_item(
 ) -> Result<String, String> {
     let id = new_id(connection)?;
     let collection_id = match item.collection.as_deref().map(str::trim) {
-        Some(name) if !name.is_empty() => Some(resolve_collection(connection, name)?),
+        Some(name) if !name.is_empty() => Some(resolve_collection(connection, name, key)?),
         _ => None,
     };
     let tags = serde_json::to_string(&item.tags).map_err(|error| error.to_string())?;
@@ -415,6 +435,7 @@ fn insert_item(
                 description: item.description.clone(),
                 content: item.content.clone(),
                 url: item.url.clone(),
+                ..Default::default()
             },
         )?;
     }
@@ -585,6 +606,10 @@ pub(crate) fn import_json_into(
             }
         }
     }
+    // Titles, tags, file and collection names are sealed before the commit.
+    if let Some(key) = key.as_ref() {
+        encryption::seal_all(&transaction, key)?;
+    }
     transaction
         .commit()
         .map_err(|error| format!("Could not finish the import: {error}"))?;
@@ -640,6 +665,9 @@ pub(crate) fn import_markdown_into(
         } else {
             report.imported += 1;
         }
+    }
+    if let Some(key) = key.as_ref() {
+        encryption::seal_all(&transaction, key)?;
     }
     transaction
         .commit()
@@ -706,9 +734,34 @@ fn read_items(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| format!("Could not read the vault: {error}"))?;
     let mut items = Vec::with_capacity(rows.len());
-    for row in rows {
+    for mut row in rows {
+        let mut tags: Vec<String> = serde_json::from_str(&row.tags).unwrap_or_default();
         let (description, content, url) = if let Some(key) = &key {
             let protected = encryption::read_secret(connection, key, &row.id)?;
+            if let Some(title) = protected.title {
+                row.title = title;
+            }
+            if let Some(sealed_tags) = protected.tags {
+                tags = sealed_tags;
+            }
+            if let (Some(name), Some(file)) = (protected.file_name, row.file.as_mut()) {
+                file.original_name = name;
+            }
+            // A sealed collection stores its id as the name; open the real one.
+            if let Some(id) = row.collection.clone() {
+                let sealed: Option<Vec<u8>> = connection
+                    .query_row(
+                        "SELECT name_secret FROM collections WHERE id = ?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| format!("Could not read the vault: {error}"))?
+                    .flatten();
+                if let Some(sealed) = sealed {
+                    row.collection = Some(encryption::open_collection_name(key, &id, &sealed)?);
+                }
+            }
             (protected.description, protected.content, protected.url)
         } else {
             (row.description, row.content, row.url)
@@ -720,7 +773,7 @@ fn read_items(
             content,
             url,
             collection: row.collection,
-            tags: serde_json::from_str(&row.tags).unwrap_or_default(),
+            tags,
             is_favorite: row.is_favorite != 0,
             is_pinned: row.is_pinned != 0,
             created_at: row.created_at,
@@ -875,13 +928,28 @@ pub(crate) fn export_vault_into(
             .map_err(|error| format!("Could not read the vault: {error}"))? as usize
     };
     let mut statement = connection
-        .prepare("SELECT name FROM collections ORDER BY sort_order, name")
+        .prepare("SELECT id, name, name_secret FROM collections ORDER BY sort_order, name")
         .map_err(|error| format!("Could not read collections: {error}"))?;
-    let collections = statement
-        .query_map([], |row| Ok(CollectionRecord { name: row.get(0)? }))
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+            ))
+        })
         .map_err(|error| format!("Could not read collections: {error}"))?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|error| format!("Could not read collections: {error}"))?;
+    let key = encryption::key_if_enabled(connection, keys)?;
+    let collections = rows
+        .into_iter()
+        .map(|(id, name, sealed)| match (key.as_ref(), sealed) {
+            (Some(key), Some(sealed)) => encryption::open_collection_name(key, &id, &sealed)
+                .map(|name| CollectionRecord { name }),
+            _ => Ok(CollectionRecord { name }),
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let document = VaultDocument {
         format: 1,
         collections,

@@ -1583,7 +1583,7 @@ mod tests {
             )
             .expect("seed item");
 
-        let tags = crate::vault::read_tags(connection).expect("read tags");
+        let tags = crate::vault::read_tags(connection, None).expect("read tags");
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].name, "Shared");
         assert_eq!(tags[0].count, 1);

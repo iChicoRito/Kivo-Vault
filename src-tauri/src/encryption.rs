@@ -3,7 +3,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use argon2::Argon2;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -161,11 +161,193 @@ pub struct ConversionSummary {
     pub file_count: usize,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+/// The encrypted fields of one item. `title`, `tags` and `file_name` are None in
+/// secrets written before names were sealed; readers then keep the column.
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct ProtectedItem {
     pub description: String,
     pub content: Option<String>,
     pub url: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub file_name: Option<String>,
+}
+
+fn collection_aad(id: &str) -> Vec<u8> {
+    format!("kivo:collection:v1:{id}").into_bytes()
+}
+fn version_title_aad(id: &str) -> Vec<u8> {
+    format!("kivo:version-title:v1:{id}").into_bytes()
+}
+
+fn open_text(key: &[u8; 32], bytes: &[u8], aad: &[u8]) -> Result<String, String> {
+    String::from_utf8(decrypt_bytes(key, bytes, aad)?)
+        .map_err(|_| "Could not read protected data".into())
+}
+
+pub fn open_collection_name(key: &[u8; 32], id: &str, bytes: &[u8]) -> Result<String, String> {
+    open_text(key, bytes, &collection_aad(id))
+}
+
+pub fn seal_version_title(key: &[u8; 32], id: &str, title: &str) -> Result<Vec<u8>, String> {
+    encrypt_bytes(key, title.as_bytes(), &version_title_aad(id))
+}
+
+pub fn open_version_title(key: &[u8; 32], id: &str, bytes: &[u8]) -> Result<String, String> {
+    open_text(key, bytes, &version_title_aad(id))
+}
+
+/// Stored in `files.original_name` while the real name is sealed. The extension
+/// stays so previews and opening still pick the right program.
+fn placeholder_file_name(name: &str) -> String {
+    match Path::new(name).extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => format!("file.{ext}"),
+        None => "file".to_string(),
+    }
+}
+
+/// Moves every readable title, tag list, file name, collection name and version
+/// title into its encrypted field, then blanks the column. It only touches rows
+/// that still hold readable text, so running it again is cheap and safe. Writers
+/// call it after saving, and unlock calls it to finish any older or unfinished
+/// rows.
+pub fn seal_all(connection: &Connection, key: &[u8; 32]) -> Result<(), String> {
+    let fail = |error: rusqlite::Error| format!("Could not protect names: {error}");
+    let rows: Vec<(String, String, String)> = {
+        let mut statement = connection
+            .prepare("SELECT id, title, tags FROM items WHERE title <> '' OR tags <> '[]'")
+            .map_err(fail)?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(fail)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(fail)?;
+        rows
+    };
+    for (id, title, tags) in rows {
+        let mut secret = read_secret(connection, key, &id).unwrap_or_default();
+        if !title.is_empty() {
+            secret.title = Some(title);
+        }
+        if tags != "[]" {
+            secret.tags = Some(serde_json::from_str(&tags).unwrap_or_default());
+        }
+        if secret.file_name.is_none() {
+            let name: Option<String> = connection
+                .query_row(
+                    "SELECT original_name FROM files WHERE item_id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(fail)?;
+            if let Some(name) = name {
+                connection
+                    .execute(
+                        "UPDATE files SET original_name = ?2 WHERE item_id = ?1",
+                        params![id, placeholder_file_name(&name)],
+                    )
+                    .map_err(fail)?;
+                secret.file_name = Some(name);
+            }
+        }
+        write_secret(connection, key, &id, &secret)?;
+        connection
+            .execute(
+                "UPDATE items SET title = '', tags = '[]' WHERE id = ?1",
+                params![id],
+            )
+            .map_err(fail)?;
+    }
+
+    let collections: Vec<(String, String)> = {
+        let mut statement = connection
+            .prepare("SELECT id, name FROM collections WHERE name_secret IS NULL")
+            .map_err(fail)?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(fail)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(fail)?;
+        rows
+    };
+    for (id, name) in collections {
+        // The id keeps the UNIQUE name column satisfied without a readable name.
+        connection
+            .execute(
+                "UPDATE collections SET name = id, name_secret = ?2 WHERE id = ?1",
+                params![id, encrypt_bytes(key, name.as_bytes(), &collection_aad(&id))?],
+            )
+            .map_err(fail)?;
+    }
+
+    let versions: Vec<(String, String)> = {
+        let mut statement = connection
+            .prepare("SELECT id, title FROM item_versions WHERE title <> ''")
+            .map_err(fail)?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(fail)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(fail)?;
+        rows
+    };
+    for (id, title) in versions {
+        connection
+            .execute(
+                "UPDATE item_versions SET title = '', title_secret = ?2 WHERE id = ?1",
+                params![id, encrypt_bytes(key, title.as_bytes(), &version_title_aad(&id))?],
+            )
+            .map_err(fail)?;
+    }
+    Ok(())
+}
+
+/// Reverse of `seal_all`, used when encryption is turned off.
+fn unseal_all(connection: &Connection, key: &[u8; 32]) -> Result<(), String> {
+    let fail = |error: rusqlite::Error| format!("Could not restore names: {error}");
+    let collections: Vec<(String, Vec<u8>)> = {
+        let mut statement = connection
+            .prepare("SELECT id, name_secret FROM collections WHERE name_secret IS NOT NULL")
+            .map_err(fail)?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(fail)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(fail)?;
+        rows
+    };
+    for (id, sealed) in collections {
+        connection
+            .execute(
+                "UPDATE collections SET name = ?2, name_secret = NULL WHERE id = ?1",
+                params![id, open_collection_name(key, &id, &sealed)?],
+            )
+            .map_err(fail)?;
+    }
+    let versions: Vec<(String, Vec<u8>)> = {
+        let mut statement = connection
+            .prepare("SELECT id, title_secret FROM item_versions WHERE title_secret IS NOT NULL")
+            .map_err(fail)?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(fail)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(fail)?;
+        rows
+    };
+    for (id, sealed) in versions {
+        connection
+            .execute(
+                "UPDATE item_versions SET title = ?2, title_secret = NULL WHERE id = ?1",
+                params![id, open_version_title(key, &id, &sealed)?],
+            )
+            .map_err(fail)?;
+    }
+    Ok(())
 }
 
 fn item_aad(id: &str) -> Vec<u8> {
@@ -213,7 +395,16 @@ pub fn write_secret(
     id: &str,
     value: &ProtectedItem,
 ) -> Result<(), String> {
-    let bytes = serde_json::to_vec(value).map_err(|_| "Could not protect data".to_string())?;
+    // A caller that only changes the body leaves the sealed names as they were.
+    let mut value = value.clone();
+    if value.title.is_none() || value.tags.is_none() || value.file_name.is_none() {
+        if let Ok(previous) = read_secret(connection, key, id) {
+            value.title = value.title.or(previous.title);
+            value.tags = value.tags.or(previous.tags);
+            value.file_name = value.file_name.or(previous.file_name);
+        }
+    }
+    let bytes = serde_json::to_vec(&value).map_err(|_| "Could not protect data".to_string())?;
     let encrypted = encrypt_bytes(key, &bytes, &item_aad(id))?;
     connection.execute("INSERT INTO item_secrets(item_id,nonce,ciphertext) VALUES (?1,?2,?3) ON CONFLICT(item_id) DO UPDATE SET nonce=excluded.nonce,ciphertext=excluded.ciphertext", params![id, &encrypted[..NONCE_LEN], &encrypted[NONCE_LEN..]])
         .map_err(|error| format!("Could not save protected item: {error}"))?;
@@ -491,6 +682,7 @@ pub fn enable(
                             description: r.get(1)?,
                             content: r.get(2)?,
                             url: r.get(3)?,
+                            ..Default::default()
                         },
                     ))
                 })
@@ -525,6 +717,7 @@ pub fn enable(
             )
             .map_err(|error| error.to_string())?;
         }
+        seal_all(&tx, &key)?;
         tx.execute("DELETE FROM item_search", [])
             .map_err(|error| error.to_string())?;
         // Related-search vectors are derived from plaintext. They must not
@@ -618,7 +811,24 @@ pub fn disable(
                 params![id, item.description, item.content, item.url],
             )
             .map_err(|error| error.to_string())?;
+            if let Some(title) = &item.title {
+                tx.execute("UPDATE items SET title=?2 WHERE id=?1", params![id, title])
+                    .map_err(|error| error.to_string())?;
+            }
+            if let Some(tags) = &item.tags {
+                let tags = serde_json::to_string(tags).map_err(|error| error.to_string())?;
+                tx.execute("UPDATE items SET tags=?2 WHERE id=?1", params![id, tags])
+                    .map_err(|error| error.to_string())?;
+            }
+            if let Some(name) = &item.file_name {
+                tx.execute(
+                    "UPDATE files SET original_name=?2 WHERE item_id=?1",
+                    params![id, name],
+                )
+                .map_err(|error| error.to_string())?;
+            }
         }
+        unseal_all(&tx, &key)?;
         for (id, body) in &versions {
             tx.execute(
                 "UPDATE item_versions SET content=?2,encrypted_content=NULL WHERE id=?1",
@@ -694,6 +904,8 @@ pub fn unlock_content_vault(
     } else {
         match unlock(connection, &password)? {
             Some(key) => {
+                // Finishes rows saved before names were sealed.
+                seal_all(connection, &key)?;
                 state.content_key().store(key)?;
                 true
             }

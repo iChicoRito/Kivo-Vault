@@ -428,7 +428,13 @@ fn read_item_summaries(
             values.push(rusqlite::types::Value::Text(collection_id.to_string()));
         }
 
-        if let Some(tag) = filter.tag.as_deref().filter(|value| !value.is_empty()) {
+        // With a key the names are sealed, so tag and text matching run in Rust
+        // on the decrypted rows below.
+        if let Some(tag) = filter
+            .tag
+            .as_deref()
+            .filter(|value| !value.is_empty() && key.is_none())
+        {
             sql.push_str(
                 " AND EXISTS (SELECT 1 FROM json_each(i.tags)
                               WHERE value = ? COLLATE NOCASE)",
@@ -445,7 +451,7 @@ fn read_item_summaries(
             .query
             .as_deref()
             .map(str::trim)
-            .filter(|q| !q.is_empty())
+            .filter(|q| !q.is_empty() && key.is_none())
         {
             let phrase = format!("\"{}\"", query.replace('"', "\"\""));
             if let Ok(mut statement) = connection.prepare(
@@ -519,12 +525,73 @@ fn read_item_summaries(
         .collect::<rusqlite::Result<Vec<ItemSummary>>>()
         .map_err(|error| error.to_string())?;
 
-    // Summaries only expose the note body, so decrypt just that value. The
-    // plaintext columns stay blank while encryption is on and the text never
-    // reaches the frontend as ciphertext.
+    // The plaintext columns stay blank while encryption is on, so the shown
+    // fields come from each item's secret, and the tag and text filters run
+    // here on the decrypted values.
     if let Some(key) = key {
-        for summary in &mut summaries {
-            summary.content = encryption::read_secret(connection, key, &summary.id)?.content;
+        let tag = filter
+            .and_then(|filter| filter.tag.as_deref())
+            .filter(|value| !value.is_empty())
+            .map(str::to_lowercase);
+        let query = filter
+            .and_then(|filter| filter.query.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_lowercase);
+        let collection_names: HashMap<String, String> = if query.is_some() {
+            read_collections(connection, Some(key))
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|collection| (collection.id, collection.name))
+                .collect()
+        } else {
+            HashMap::new()
+        };
+
+        let mut kept = Vec::with_capacity(summaries.len());
+        for mut summary in summaries {
+            let secret = encryption::read_secret(connection, key, &summary.id)?;
+            if let Some(title) = secret.title {
+                summary.title = title;
+            }
+            if let (Some(name), Some(file)) = (secret.file_name, summary.file.as_mut()) {
+                file.original_name = name;
+            }
+            summary.content = secret.content;
+            let tags = secret.tags.unwrap_or_default();
+
+            if let Some(tag) = &tag {
+                if !tags.iter().any(|value| value.to_lowercase() == *tag) {
+                    continue;
+                }
+            }
+            if let Some(query) = &query {
+                let collection = summary
+                    .collection_id
+                    .as_ref()
+                    .and_then(|id| collection_names.get(id));
+                let found = [
+                    Some(&summary.title),
+                    Some(&secret.description),
+                    summary.content.as_ref(),
+                    secret.url.as_ref(),
+                    summary.file.as_ref().map(|file| &file.original_name),
+                    collection,
+                ]
+                .into_iter()
+                .flatten()
+                .chain(tags.iter())
+                .any(|value| value.to_lowercase().contains(query.as_str()));
+                if !found {
+                    continue;
+                }
+            }
+            kept.push(summary);
+        }
+        summaries = kept;
+
+        if !trashed && filter.and_then(|filter| filter.sort.as_deref()) == Some("title") {
+            summaries.sort_by_key(|summary| summary.title.to_lowercase());
         }
     }
 
@@ -556,54 +623,130 @@ fn read_item_summaries(
 const COLLECTION_SELECT: &str = "SELECT c.id, c.name, c.sort_order, c.created_at, c.icon,
             (SELECT COUNT(*) FROM items i
              WHERE i.collection_id = c.id AND i.deleted_at IS NULL),
-            c.protection
+            c.protection, c.name_secret
      FROM collections c";
 
-fn read_collection(connection: &Connection, id: &str) -> rusqlite::Result<Option<Collection>> {
+fn map_collection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(Collection, Option<Vec<u8>>)> {
+    Ok((
+        Collection {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            sort_order: row.get(2)?,
+            created_at: row.get(3)?,
+            icon: row.get(4)?,
+            item_count: row.get(5)?,
+            protection: row.get(6)?,
+        },
+        row.get(7)?,
+    ))
+}
+
+// A sealed name opens with the key; without one the stored column is used.
+fn open_collection(
+    key: Option<&[u8; 32]>,
+    (mut collection, sealed): (Collection, Option<Vec<u8>>),
+) -> Result<Collection, String> {
+    if let (Some(key), Some(sealed)) = (key, sealed) {
+        collection.name = encryption::open_collection_name(key, &collection.id, &sealed)?;
+    }
+    Ok(collection)
+}
+
+fn read_collection(
+    connection: &Connection,
+    id: &str,
+    key: Option<&[u8; 32]>,
+) -> Result<Option<Collection>, String> {
     connection
         .query_row(
             &format!("{COLLECTION_SELECT} WHERE c.id = ?1"),
             params![id],
-            |row| {
-                Ok(Collection {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    sort_order: row.get(2)?,
-                    created_at: row.get(3)?,
-                    icon: row.get(4)?,
-                    item_count: row.get(5)?,
-                    protection: row.get(6)?,
-                })
-            },
+            map_collection_row,
         )
         .optional()
+        .map_err(|error| error.to_string())?
+        .map(|row| open_collection(key, row))
+        .transpose()
 }
 
-fn read_collections(connection: &Connection) -> rusqlite::Result<Vec<Collection>> {
-    let mut statement = connection.prepare(&format!(
-        "{COLLECTION_SELECT} ORDER BY c.sort_order ASC, c.name COLLATE NOCASE ASC"
-    ))?;
+fn read_collections(
+    connection: &Connection,
+    key: Option<&[u8; 32]>,
+) -> Result<Vec<Collection>, String> {
+    let mut statement = connection
+        .prepare(&format!(
+            "{COLLECTION_SELECT} ORDER BY c.sort_order ASC, c.name COLLATE NOCASE ASC"
+        ))
+        .map_err(|error| error.to_string())?;
 
-    let collections = statement
-        .query_map([], |row| {
-            Ok(Collection {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                sort_order: row.get(2)?,
-                created_at: row.get(3)?,
-                icon: row.get(4)?,
-                item_count: row.get(5)?,
-                protection: row.get(6)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<Collection>>>()?;
+    let rows = statement
+        .query_map([], map_collection_row)
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    let mut collections = rows
+        .into_iter()
+        .map(|row| open_collection(key, row))
+        .collect::<Result<Vec<_>, _>>()?;
+    if key.is_some() {
+        collections.sort_by(|a, b| {
+            a.sort_order
+                .cmp(&b.sort_order)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+    }
 
     Ok(collections)
 }
 
 // Item tags only. Password tags are encrypted with the rest of each credential,
 // so they stay inside the Passwords page. An item only counts once per tag.
-pub(crate) fn read_tags(connection: &Connection) -> rusqlite::Result<Vec<Tag>> {
+// With a key the tags are sealed, so they are counted from each live item's
+// secret instead.
+pub(crate) fn read_tags(connection: &Connection, key: Option<&[u8; 32]>) -> Result<Vec<Tag>, String> {
+    if let Some(key) = key {
+        let ids: Vec<String> = {
+            let mut statement = connection
+                .prepare("SELECT id FROM items WHERE deleted_at IS NULL")
+                .map_err(|error| error.to_string())?;
+            let ids = statement
+                .query_map([], |row| row.get(0))
+                .map_err(|error| error.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| error.to_string())?;
+            ids
+        };
+        // lowercase name -> (shown spelling, item count)
+        let mut counts: HashMap<String, (String, i64)> = HashMap::new();
+        for id in ids {
+            let tags = encryption::read_secret(connection, key, &id)?
+                .tags
+                .unwrap_or_default();
+            let mut seen = std::collections::HashSet::new();
+            for tag in tags {
+                let lower = tag.to_lowercase();
+                if !seen.insert(lower.clone()) {
+                    continue;
+                }
+                let entry = counts.entry(lower).or_insert((tag.clone(), 0));
+                if tag < entry.0 {
+                    entry.0 = tag;
+                }
+                entry.1 += 1;
+            }
+        }
+        let mut tags: Vec<Tag> = counts
+            .into_values()
+            .map(|(name, count)| Tag { name, count })
+            .collect();
+        tags.sort_by_key(|tag| tag.name.to_lowercase());
+        return Ok(tags);
+    }
+
+    read_plain_tags(connection).map_err(|error| error.to_string())
+}
+
+fn read_plain_tags(connection: &Connection) -> rusqlite::Result<Vec<Tag>> {
     let mut statement = connection.prepare(
         "SELECT MIN(value) AS name, COUNT(DISTINCT i.id) AS count
          FROM items i, json_each(i.tags)
@@ -681,11 +824,12 @@ fn insert_version(
     match key {
         Some(key) => {
             let encrypted = encryption::encrypt_version(key, &version_id, content)?;
+            let sealed_title = encryption::seal_version_title(key, &version_id, title)?;
             connection
                 .execute(
-                    "INSERT INTO item_versions(id, item_id, title, content, encrypted_content, created_at)
-                     VALUES (?1, ?2, ?3, '', ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                    params![version_id, item_id, title, encrypted],
+                    "INSERT INTO item_versions(id, item_id, title, content, encrypted_content, title_secret, created_at)
+                     VALUES (?1, ?2, '', '', ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                    params![version_id, item_id, encrypted, sealed_title],
                 )
                 .map_err(|error| error.to_string())?;
         }
@@ -715,7 +859,7 @@ fn read_versions(
     key: Option<&[u8; 32]>,
 ) -> Result<Vec<ItemVersion>, String> {
     let mut statement = connection
-        .prepare("SELECT id, item_id, title, content, encrypted_content, created_at FROM item_versions WHERE item_id = ?1 ORDER BY created_at DESC, rowid DESC")
+        .prepare("SELECT id, item_id, title, content, encrypted_content, created_at, title_secret FROM item_versions WHERE item_id = ?1 ORDER BY created_at DESC, rowid DESC")
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map(params![item_id], |row| {
@@ -726,6 +870,7 @@ fn read_versions(
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<Vec<u8>>>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, Option<Vec<u8>>>(6)?,
             ))
         })
         .map_err(|error| error.to_string())?
@@ -733,10 +878,14 @@ fn read_versions(
         .map_err(|error| error.to_string())?;
 
     let mut versions = Vec::with_capacity(rows.len());
-    for (id, item_id, title, content, encrypted, created_at) in rows {
+    for (id, item_id, title, content, encrypted, created_at, sealed_title) in rows {
         let content = match (key, encrypted) {
             (Some(key), Some(bytes)) => encryption::decrypt_version(key, &id, &bytes)?,
             _ => content,
+        };
+        let title = match (key, sealed_title) {
+            (Some(key), Some(bytes)) => encryption::open_version_title(key, &id, &bytes)?,
+            _ => title,
         };
         versions.push(ItemVersion {
             id,
@@ -857,15 +1006,21 @@ fn write_item(
         .map_err(|error| format!("Could not save the item: {error}"))?;
 
     let old_title = if kind == "note" && is_update {
-        Some(
-            transaction
-                .query_row(
-                    "SELECT title FROM items WHERE id = ?1",
-                    params![id],
-                    |row| row.get::<_, String>(0),
-                )
-                .map_err(|error| format!("Could not save the item: {error}"))?,
-        )
+        let column: String = transaction
+            .query_row(
+                "SELECT title FROM items WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not save the item: {error}"))?;
+        // A sealed title lives in the secret; the column is blank.
+        let sealed = match key {
+            Some(key) => encryption::read_secret(&transaction, key, &id)
+                .map_err(|error| format!("Could not save the item: {error}"))?
+                .title,
+            None => None,
+        };
+        Some(sealed.unwrap_or(column))
     } else {
         None
     };
@@ -890,11 +1045,11 @@ fn write_item(
                 transaction
                     .execute(
                         "UPDATE items
-                         SET title = ?1, description = '', content = NULL, url = NULL,
-                             collection_id = ?2, is_favorite = ?3, is_pinned = ?4,
+                         SET title = '', description = '', content = NULL, url = NULL,
+                             collection_id = ?1, is_favorite = ?2, is_pinned = ?3,
                              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                         WHERE id = ?5",
-                        params![title, collection_id, is_favorite, is_pinned, id],
+                         WHERE id = ?4",
+                        params![collection_id, is_favorite, is_pinned, id],
                     )
                     .map_err(|error| format!("Could not save the item: {error}"))?;
                 encryption::write_secret(
@@ -905,6 +1060,8 @@ fn write_item(
                         description: description.clone(),
                         content: content.clone(),
                         url: url.clone(),
+                        title: Some(title.clone()),
+                        ..Default::default()
                     },
                 )
                 .map_err(|error| format!("Could not save the item: {error}"))?;
@@ -939,10 +1096,10 @@ fn write_item(
                         "INSERT INTO items
                            (id, kind, title, description, content, url, collection_id, is_favorite,
                             is_pinned, created_at, updated_at)
-                         VALUES (?1, ?2, ?3, '', NULL, NULL, ?4, ?5, ?6,
+                         VALUES (?1, ?2, '', '', NULL, NULL, ?3, ?4, ?5,
                                  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                                  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                        params![id, kind, title, collection_id, is_favorite, is_pinned],
+                        params![id, kind, collection_id, is_favorite, is_pinned],
                     )
                     .map_err(|error| format!("Could not save the item: {error}"))?;
                 encryption::write_secret(
@@ -953,6 +1110,9 @@ fn write_item(
                         description: description.clone(),
                         content: content.clone(),
                         url: url.clone(),
+                        title: Some(title.clone()),
+                        tags: Some(Vec::new()),
+                        ..Default::default()
                     },
                 )
                 .map_err(|error| format!("Could not save the item: {error}"))?;
@@ -1027,6 +1187,7 @@ fn replace_item_tags(
     connection: &mut Connection,
     item_id: &str,
     tags: &[String],
+    key: Option<&[u8; 32]>,
 ) -> Result<Vec<String>, String> {
     let mut seen = std::collections::HashSet::new();
     let mut names = Vec::new();
@@ -1063,12 +1224,24 @@ fn replace_item_tags(
         return Err("Item was not found".to_string());
     }
 
+    // With a key the tags are sealed in the secret and the column stays empty.
+    let column = match key {
+        Some(key) => {
+            let mut secret = encryption::read_secret(&transaction, key, item_id)
+                .map_err(|error| format!("Could not save the item tags: {error}"))?;
+            secret.tags = Some(names.clone());
+            encryption::write_secret(&transaction, key, item_id, &secret)
+                .map_err(|error| format!("Could not save the item tags: {error}"))?;
+            "[]".to_string()
+        }
+        None => encoded,
+    };
     transaction
         .execute(
             "UPDATE items
              SET tags = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?1",
-            params![item_id, encoded],
+            params![item_id, column],
         )
         .map_err(|error| format!("Could not save the item tags: {error}"))?;
 
@@ -1510,9 +1683,8 @@ fn write_import(
             key,
             &id,
             &ProtectedItem {
-                description: String::new(),
-                content: None,
-                url: None,
+                tags: Some(Vec::new()),
+                ..Default::default()
             },
         )
         .map_err(|error| format!("Could not import the file: {error}"))?;
@@ -1525,6 +1697,12 @@ fn write_import(
             params![id, stored_name, original_name, byte_size, i64::from(key.is_some())],
         )
         .map_err(|error| format!("Could not import the file: {error}"))?;
+
+    // The title and file name go into the secret before the commit.
+    if let Some(key) = key {
+        encryption::seal_all(&transaction, key)
+            .map_err(|error| format!("Could not import the file: {error}"))?;
+    }
 
     upsert_index_state(&transaction, &id)
         .map_err(|error| format!("Could not import the file: {error}"))?;
@@ -1592,6 +1770,15 @@ fn load_item_with_state(state: &DatabaseState, id: &str) -> Result<Item, String>
         item.description = secret.description;
         item.content = secret.content;
         item.url = secret.url;
+        if let Some(title) = secret.title {
+            item.title = title;
+        }
+        if let Some(tags) = secret.tags {
+            item.tags = tags;
+        }
+        if let (Some(name), Some(file)) = (secret.file_name, item.file.as_mut()) {
+            file.original_name = name;
+        }
     }
 
     Ok(item)
@@ -1639,14 +1826,17 @@ fn set_item_tags_with_state(
     let mut connection = state.require_connection()?;
     let connection = connection.as_mut().expect("checked above");
     ensure_item_accessible(connection, state, id)?;
+    let key = encryption::key_if_enabled(connection, state.content_key())?;
 
-    replace_item_tags(connection, id, tags)
+    replace_item_tags(connection, id, tags, key.as_ref())
 }
 
 fn list_collections_with_state(state: &DatabaseState) -> Result<Vec<Collection>, String> {
     let connection = state.require_connection()?;
+    let connection = connection.as_ref().expect("checked above");
+    let key = encryption::key_if_enabled(connection, state.content_key())?;
 
-    read_collections(connection.as_ref().expect("checked above"))
+    read_collections(connection, key.as_ref())
         .map_err(|error| format!("Could not list the collections: {error}"))
 }
 
@@ -1691,13 +1881,18 @@ fn restore_item_version_with_state(
         let tx = connection
             .transaction()
             .map_err(|error| format!("Could not restore version: {error}"))?;
-        let version: Option<(String, String, String, Option<Vec<u8>>)> = tx.query_row(
-            "SELECT v.item_id, v.title, v.content, v.encrypted_content FROM item_versions v JOIN items i ON i.id = v.item_id WHERE v.id = ?1 AND i.kind = 'note' AND i.deleted_at IS NULL",
-            params![version_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        let version: Option<(String, String, String, Option<Vec<u8>>, Option<Vec<u8>>)> = tx.query_row(
+            "SELECT v.item_id, v.title, v.content, v.encrypted_content, v.title_secret FROM item_versions v JOIN items i ON i.id = v.item_id WHERE v.id = ?1 AND i.kind = 'note' AND i.deleted_at IS NULL",
+            params![version_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         ).optional().map_err(|error| format!("Could not restore version: {error}"))?;
-        let (id, title, stored_content, encrypted) =
+        let (id, title, stored_content, encrypted, sealed_title) =
             version.ok_or_else(|| "Version was not found".to_string())?;
         ensure_item_accessible(&tx, state, &id)?;
+        let title = match (&key, sealed_title) {
+            (Some(key), Some(bytes)) => encryption::open_version_title(key, version_id, &bytes)
+                .map_err(|error| format!("Could not restore version: {error}"))?,
+            _ => title,
+        };
         let content = match (&key, encrypted) {
             (Some(key), Some(bytes)) => encryption::decrypt_version(key, version_id, &bytes)
                 .map_err(|error| format!("Could not restore version: {error}"))?,
@@ -1710,11 +1905,19 @@ fn restore_item_version_with_state(
                 |row| row.get(0),
             )
             .map_err(|error| format!("Could not restore version: {error}"))?;
-        let current_content = match &key {
-            Some(key) => encryption::read_secret(&tx, key, &id)
-                .map_err(|error| format!("Could not restore version: {error}"))?
-                .content
-                .unwrap_or_default(),
+        let current_secret = match &key {
+            Some(key) => Some(
+                encryption::read_secret(&tx, key, &id)
+                    .map_err(|error| format!("Could not restore version: {error}"))?,
+            ),
+            None => None,
+        };
+        let current_title = current_secret
+            .as_ref()
+            .and_then(|secret| secret.title.clone())
+            .unwrap_or(current_title);
+        let current_content = match &current_secret {
+            Some(secret) => secret.content.clone().unwrap_or_default(),
             None => tx
                 .query_row(
                     "SELECT COALESCE(content, '') FROM items WHERE id = ?1",
@@ -1730,9 +1933,10 @@ fn restore_item_version_with_state(
                 let mut secret = encryption::read_secret(&tx, key, &id)
                     .map_err(|error| format!("Could not restore version: {error}"))?;
                 secret.content = Some(content.clone());
+                secret.title = Some(title.clone());
                 encryption::write_secret(&tx, key, &id, &secret)
                     .map_err(|error| format!("Could not restore version: {error}"))?;
-                tx.execute("UPDATE items SET title = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1", params![id, title]).map_err(|error| format!("Could not restore version: {error}"))?;
+                tx.execute("UPDATE items SET title = '', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1", params![id]).map_err(|error| format!("Could not restore version: {error}"))?;
             }
             None => {
                 tx.execute("UPDATE items SET title = ?2, content = ?3, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1", params![id, title, content]).map_err(|error| format!("Could not restore version: {error}"))?;
@@ -1771,6 +1975,14 @@ fn read_item_file_with_state(state: &DatabaseState, id: &str) -> Result<ItemFile
         ).optional().map_err(|error| format!("Could not read the file: {error}"))?;
         let (stored, name, size, imported, encrypted) =
             row.ok_or_else(|| "File was not found".to_string())?;
+        // A sealed name keeps its extension in the column, so the preview type
+        // is the same; the real name comes from the secret.
+        let name = match key.as_ref() {
+            Some(key) => encryption::read_secret(connection, key, id)?
+                .file_name
+                .unwrap_or(name),
+            None => name,
+        };
         (
             state.files_dir().join(stored),
             name,
@@ -1889,6 +2101,7 @@ fn load_storage_report_with_state(state: &DatabaseState) -> Result<StorageReport
         .query_row("PRAGMA page_size", [], |row| row.get(0))
         .map_err(|error| error.to_string())?;
     let locked = locked_collection_ids(connection, state)?;
+    let key = encryption::key_if_enabled(connection, state.content_key())?;
     let mut statement = connection.prepare("SELECT f.item_id, i.title, f.original_name, f.byte_size, f.imported_at, i.collection_id FROM files f JOIN items i ON i.id=f.item_id ORDER BY f.byte_size DESC, f.item_id ASC").map_err(|error| error.to_string())?;
     let rows: Vec<(StorageFile, Option<String>)> = statement
         .query_map([], |row| {
@@ -1913,7 +2126,13 @@ fn load_storage_report_with_state(state: &DatabaseState) -> Result<StorageReport
     for (file, collection_id) in rows {
         let hidden = collection_id.is_some_and(|id| locked.contains(&id));
         if !hidden && largest.len() < 10 {
-            largest.push(file.clone());
+            let mut shown = file.clone();
+            if let Some(key) = key.as_ref() {
+                let secret = encryption::read_secret(connection, key, &shown.item_id)?;
+                shown.title = secret.title.unwrap_or(shown.title);
+                shown.original_name = secret.file_name.unwrap_or(shown.original_name);
+            }
+            largest.push(shown);
         }
         files.push(file);
     }
@@ -2063,6 +2282,13 @@ fn load_vault_summary_with_state(state: &DatabaseState) -> Result<VaultSummary, 
             },
         )
         .map_err(|error| format!("Could not read the vault summary: {error}"))?;
+    // Sealed tags are counted from the secrets when the vault is open.
+    let tag_count = match encryption::key_if_enabled(connection, state.content_key()).unwrap_or(None) {
+        Some(key) => read_tags(connection, Some(&key))
+            .map_err(|error| format!("Could not read the vault summary: {error}"))?
+            .len() as i64,
+        None => tag_count,
+    };
 
     let page_count: i64 = connection
         .query_row("PRAGMA page_count", [], |row| row.get(0))
@@ -2096,7 +2322,31 @@ fn save_collection_with_state(
         if let Some(id) = input.id.as_deref() {
             ensure_collection_accessible(connection, state, id)?;
         }
+        let key = encryption::key_if_enabled(connection, state.content_key())?;
+        if let Some(key) = key.as_ref() {
+            // Sealed names cannot be compared in SQL, so duplicates are
+            // checked here on the decrypted names.
+            let name = input.name.trim().to_lowercase();
+            let taken = read_collections(connection, Some(key))?
+                .into_iter()
+                .any(|collection| {
+                    Some(collection.id.as_str()) != input.id.as_deref()
+                        && collection.name.trim().to_lowercase() == name
+                });
+            if taken && !name.is_empty() {
+                return Err("A collection with that name already exists".to_string());
+            }
+        }
         let id = write_collection(connection, input)?;
+        if let Some(key) = key.as_ref() {
+            connection
+                .execute(
+                    "UPDATE collections SET name_secret = NULL WHERE id = ?1",
+                    params![id],
+                )
+                .map_err(|error| format!("Could not save the collection: {error}"))?;
+            encryption::seal_all(connection, key)?;
+        }
         // Whoever just set a new secret knows it, so the collection stays open
         // for them until the app locks.
         if input.secret.is_some() {
@@ -2106,7 +2356,9 @@ fn save_collection_with_state(
     };
 
     let connection = state.require_connection()?;
-    let collection = read_collection(connection.as_ref().expect("checked above"), &id)
+    let connection = connection.as_ref().expect("checked above");
+    let key = encryption::key_if_enabled(connection, state.content_key())?;
+    let collection = read_collection(connection, &id, key.as_ref())
         .map_err(|error| format!("Could not read the collection: {error}"))?;
 
     collection.ok_or_else(|| "Collection was not found".to_string())
@@ -2151,8 +2403,10 @@ fn verify_collection_secret_with_state(
 
 fn list_tags_with_state(state: &DatabaseState) -> Result<Vec<Tag>, String> {
     let connection = state.require_connection()?;
+    let connection = connection.as_ref().expect("checked above");
+    let key = encryption::key_if_enabled(connection, state.content_key())?;
 
-    read_tags(connection.as_ref().expect("checked above"))
+    read_tags(connection, key.as_ref())
         .map_err(|error| format!("Could not list the tags: {error}"))
 }
 
@@ -4597,6 +4851,125 @@ mod tests {
         };
         state.content_key().store(key).expect("store content key");
         key
+    }
+
+    #[test]
+    fn names_are_sealed_while_encrypted_and_still_searchable() {
+        let vault = TempVault::new("sealed-names");
+        let state = vault.state();
+
+        // Made before encryption, so enabling must seal them.
+        let before = save_collection_with_state(&state, &collection_input("Travel plans"))
+            .expect("create collection");
+        let mut early = note_input("Zebra passport", "body");
+        early.collection_id = Some(before.id.clone());
+        let early = save_item_with_state(&state, &early).expect("save early note");
+        set_item_tags_with_state(&state, &early.id, &["Visa".to_string()]).expect("tag early");
+        let mut changed = note_input("Zebra passport", "new body");
+        changed.id = Some(early.id.clone());
+        changed.collection_id = Some(before.id.clone());
+        save_item_with_state(&state, &changed).expect("make a version");
+
+        enable_content_encryption(&state, "master-pass");
+
+        // Made while encrypted.
+        let late = save_item_with_state(&state, &note_input("Apple budget", "body"))
+            .expect("save late note");
+        set_item_tags_with_state(&state, &late.id, &["Money".to_string()]).expect("tag late");
+
+        {
+            let connection = state.require_connection().expect("lock connection");
+            let connection = connection.as_ref().expect("connection is initialized");
+            let readable: String = connection
+                .query_row(
+                    "SELECT (SELECT group_concat(title || tags, '|') FROM items)
+                         || (SELECT group_concat(name, '|') FROM collections)
+                         || COALESCE((SELECT group_concat(title, '|') FROM item_versions), '')",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("read raw names");
+            for plain in ["Zebra", "Apple", "Visa", "Money", "Travel"] {
+                assert!(!readable.contains(plain), "{plain} is stored readable: {readable}");
+            }
+        }
+
+        // Everything still reads back and filters on the decrypted values.
+        assert_eq!(load_item_with_state(&state, &early.id).unwrap().title, "Zebra passport");
+        assert_eq!(load_item_with_state(&state, &late.id).unwrap().tags, vec!["Money"]);
+        let collections = list_collections_with_state(&state).expect("list collections");
+        assert_eq!(collections[0].name, "Travel plans");
+
+        let sorted = list_items_with_state(
+            &state,
+            Some(&ItemFilter {
+                sort: Some("title".to_string()),
+                ..Default::default()
+            }),
+        )
+        .expect("sort by title");
+        assert_eq!(titles(&sorted), vec!["Apple budget", "Zebra passport"]);
+
+        for (query, expected) in [("zebra", "Zebra passport"), ("travel", "Zebra passport"), ("money", "Apple budget")] {
+            let found = list_items_with_state(
+                &state,
+                Some(&ItemFilter {
+                    query: Some(query.to_string()),
+                    ..Default::default()
+                }),
+            )
+            .expect("search");
+            assert_eq!(titles(&found), vec![expected], "query {query}");
+        }
+        let tagged = list_items_with_state(
+            &state,
+            Some(&ItemFilter {
+                tag: Some("visa".to_string()),
+                ..Default::default()
+            }),
+        )
+        .expect("tag filter");
+        assert_eq!(titles(&tagged), vec!["Zebra passport"]);
+
+        let tags = list_tags_with_state(&state).expect("list tags");
+        assert_eq!(
+            tags.iter().map(|tag| tag.name.as_str()).collect::<Vec<_>>(),
+            vec!["Money", "Visa"]
+        );
+        let versions = list_item_versions_with_state(&state, &early.id).expect("versions");
+        assert_eq!(versions[0].title, "Zebra passport");
+
+        // A duplicate name is still refused while names are sealed.
+        assert_eq!(
+            save_collection_with_state(&state, &collection_input("travel plans")).unwrap_err(),
+            "A collection with that name already exists"
+        );
+
+        // Turning encryption off puts every name back in its column.
+        {
+            let mut connection = state.require_connection().expect("lock connection");
+            let connection = connection.as_mut().expect("connection is initialized");
+            encryption::disable(connection, state.files_dir(), "master-pass").expect("disable");
+        }
+        state.content_key().clear().expect("clear key");
+        let connection = state.require_connection().expect("lock connection");
+        let connection = connection.as_ref().expect("connection is initialized");
+        let (title, tags): (String, String) = connection
+            .query_row(
+                "SELECT title, tags FROM items WHERE id = ?1",
+                params![early.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read restored item");
+        assert_eq!((title.as_str(), tags.as_str()), ("Zebra passport", "[\"Visa\"]"));
+        let name: String = connection
+            .query_row(
+                "SELECT name FROM collections WHERE id = ?1",
+                params![before.id],
+                |row| row.get(0),
+            )
+            .expect("read restored collection");
+        assert_eq!(name, "Travel plans");
     }
 
     #[test]

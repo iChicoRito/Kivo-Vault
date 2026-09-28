@@ -649,11 +649,19 @@ pub(crate) fn search_related_items_with_state(
     // derives the terms in memory from the decrypted rows instead.
     let mut owned: Vec<OwnedVector> = Vec::new();
     if encrypted {
-        for item in items {
+        for mut item in items {
             let (description, content) = match key.as_ref() {
                 Some(key) => {
                     match crate::encryption::read_secret(connection, key, &item.summary.id) {
-                        Ok(protected) => (protected.description, protected.content),
+                        Ok(protected) => {
+                            if let Some(title) = protected.title {
+                                item.summary.title = title;
+                            }
+                            if let Some(tags) = protected.tags {
+                                item.tags = tags;
+                            }
+                            (protected.description, protected.content)
+                        }
                         Err(_) => continue,
                     }
                 }
@@ -802,10 +810,10 @@ fn read_item_text(
     match crate::encryption::read_secret(connection, &key, id) {
         Ok(protected) => Ok(Some(ItemText {
             kind,
-            title,
+            title: protected.title.unwrap_or(title),
             description: protected.description,
             content: protected.content.unwrap_or_default(),
-            tags,
+            tags: protected.tags.unwrap_or(tags),
         })),
         Err(_) => Ok(None),
     }

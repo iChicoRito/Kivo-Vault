@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -24,6 +25,7 @@ const PHASE_SIX_MIGRATION: &str = include_str!("../migrations/0012_phase_six_pro
 const PHASE_SEVEN_MIGRATION: &str = include_str!("../migrations/0013_phase_seven.sql");
 const ACTIVITY_HISTORY_REMOVAL: &str = include_str!("../migrations/0014_drop_activity.sql");
 const NAVIGATION_STYLE_MIGRATION: &str = include_str!("../migrations/0015_navigation_style.sql");
+const CREDENTIAL_BLOB_MIGRATION: &str = include_str!("../migrations/0016_credential_blob.sql");
 
 struct Migration {
     version: i64,
@@ -93,6 +95,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 15,
         sql: NAVIGATION_STYLE_MIGRATION,
     },
+    Migration {
+        version: 16,
+        sql: CREDENTIAL_BLOB_MIGRATION,
+    },
 ];
 
 pub struct DatabaseState {
@@ -102,6 +108,96 @@ pub struct DatabaseState {
     // The in-memory content key lives with the connection so one managed state
     // owns both and the commands cannot disagree about which vault is open.
     content_key: crate::encryption::ContentKeyState,
+    // Protected collections opened with their PIN or password this session.
+    // Cleared whenever the app locks, so a lock closes them all again.
+    unlocked_collections: Mutex<HashSet<String>>,
+}
+
+#[allow(dead_code)]
+pub(crate) const COLLECTION_LOCKED: &str = "This collection is locked";
+
+/// Protected collections that have not been opened with their secret since the
+/// app last locked. Their items stay out of every list and command.
+#[allow(dead_code)]
+pub(crate) fn locked_collection_ids(
+    connection: &Connection,
+    state: &DatabaseState,
+) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare("SELECT id FROM collections WHERE protection <> 'none'")
+        .map_err(|error| error.to_string())?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+
+    Ok(ids
+        .into_iter()
+        .filter(|id| !state.is_collection_unlocked(id))
+        .collect())
+}
+
+/// SQL that keeps out items of the given locked collections. The caller binds
+/// the ids as parameters, in order, where this text sits in the query.
+#[allow(dead_code)]
+pub(crate) fn locked_filter_sql(column: &str, locked: &[String]) -> String {
+    if locked.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        " AND ({column} IS NULL OR {column} NOT IN ({}))",
+        vec!["?"; locked.len()].join(",")
+    )
+}
+
+#[allow(dead_code)]
+pub(crate) fn ensure_collection_accessible(
+    connection: &Connection,
+    state: &DatabaseState,
+    collection_id: &str,
+) -> Result<(), String> {
+    let protection: Option<String> = connection
+        .query_row(
+            "SELECT protection FROM collections WHERE id = ?1",
+            params![collection_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+
+    match protection {
+        Some(protection)
+            if protection != "none" && !state.is_collection_unlocked(collection_id) =>
+        {
+            Err(COLLECTION_LOCKED.to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Refuses an item that sits in a locked collection. A missing item passes so
+/// the command reports its own "not found".
+#[allow(dead_code)]
+pub(crate) fn ensure_item_accessible(
+    connection: &Connection,
+    state: &DatabaseState,
+    item_id: &str,
+) -> Result<(), String> {
+    let collection_id: Option<Option<String>> = connection
+        .query_row(
+            "SELECT collection_id FROM items WHERE id = ?1",
+            params![item_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+
+    match collection_id.flatten() {
+        Some(collection_id) => ensure_collection_accessible(connection, state, &collection_id),
+        None => Ok(()),
+    }
 }
 
 #[derive(Deserialize)]
@@ -163,6 +259,7 @@ impl DatabaseState {
             path,
             files_dir,
             content_key: crate::encryption::ContentKeyState::default(),
+            unlocked_collections: Mutex::new(HashSet::new()),
         }
     }
 
@@ -231,10 +328,32 @@ impl DatabaseState {
         &self.content_key
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn unlock_collection(&self, id: &str) {
+        if let Ok(mut unlocked) = self.unlocked_collections.lock() {
+            unlocked.insert(id.to_string());
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_collection_unlocked(&self, id: &str) -> bool {
+        self.unlocked_collections
+            .lock()
+            .map(|unlocked| unlocked.contains(id))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn clear_unlocked_collections(&self) {
+        if let Ok(mut unlocked) = self.unlocked_collections.lock() {
+            unlocked.clear();
+        }
+    }
+
     // Drops the live connection so restore can replace the database file. The
     // connection is reopened through `initialize`, which also migrates and
     // recovers any interrupted file conversion.
     pub(crate) fn close_connection(&self) -> Result<(), String> {
+        self.clear_unlocked_collections();
         let mut stored = self.lock_connection()?;
         drop(stored.take());
         Ok(())
@@ -841,7 +960,7 @@ mod tests {
             .expect("mark password vault version");
         connection.execute("INSERT INTO credentials(id, service, password_nonce, password_ciphertext, created_at, updated_at) VALUES ('credential-1', 'Kept', x'010203', x'040506', '2026-01-01', '2026-01-01')", []).expect("seed credential");
         apply_migrations(&mut connection).expect("upgrade version 10 vault");
-        assert_eq!(read_user_version(&connection), 15);
+        assert_eq!(read_user_version(&connection), 16);
         assert!(table_exists(&connection, "credentials"));
         assert!(table_exists(&connection, "item_search"));
         assert!(table_exists(&connection, "item_versions"));
@@ -858,7 +977,7 @@ mod tests {
         apply_migrations(&mut connection).expect("first migration");
         apply_migrations(&mut connection).expect("second migration");
 
-        assert_eq!(read_user_version(&connection), 15);
+        assert_eq!(read_user_version(&connection), 16);
 
         for table in [
             "profile",
@@ -902,7 +1021,7 @@ mod tests {
         let mut connection = Connection::open_in_memory().expect("open in-memory database");
 
         apply_migrations(&mut connection).expect("first migration");
-        assert_eq!(read_user_version(&connection), 15);
+        assert_eq!(read_user_version(&connection), 16);
 
         // Dropping a table gives the test a way to detect whether the migration ran again.
         connection
@@ -915,7 +1034,7 @@ mod tests {
             !table_exists(&connection, "preferences"),
             "an up-to-date database must not re-run its migration"
         );
-        assert_eq!(read_user_version(&connection), 15);
+        assert_eq!(read_user_version(&connection), 16);
     }
 
     #[test]
@@ -938,7 +1057,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 15);
+        assert_eq!(read_user_version(&connection), 16);
         assert_eq!(
             read_preferences(&connection).expect("read preferences"),
             Preferences {
@@ -1011,7 +1130,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 15);
+        assert_eq!(read_user_version(&connection), 16);
         assert!(
             !table_exists(&connection, "starter_collections"),
             "the onboarding table is dropped after the copy"
@@ -1091,7 +1210,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 15);
+        assert_eq!(read_user_version(&connection), 16);
 
         let (title, content, is_pinned, deleted_at, icon): (
             String,
@@ -1156,7 +1275,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 15);
+        assert_eq!(read_user_version(&connection), 16);
         let collections_view: String = connection
             .query_row(
                 "SELECT collections_view FROM preferences WHERE id = 1",
@@ -1199,7 +1318,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 15);
+        assert_eq!(read_user_version(&connection), 16);
         let (protection, secret_hash): (String, Option<String>) = connection
             .query_row(
                 "SELECT protection, secret_hash FROM collections WHERE id = 'col-old'",
@@ -1258,7 +1377,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 15);
+        assert_eq!(read_user_version(&connection), 16);
         let tags: String = connection
             .query_row("SELECT tags FROM items WHERE id = 'item-1'", [], |row| {
                 row.get(0)

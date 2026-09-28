@@ -703,6 +703,7 @@ pub fn unlock_content_vault(
 #[tauri::command]
 pub fn lock_content_vault(state: State<'_, DatabaseState>) -> Result<(), String> {
     clear_temp_files();
+    state.clear_unlocked_collections();
     state.content_key().clear()
 }
 

@@ -12,6 +12,7 @@ export const exportNoteMarkdown = (id: string, path: string) =>
   invoke<void>('export_note_markdown', { id, path })
 export const exportItemsJson = (ids: string[], path: string) =>
   invoke<void>('export_items_json', { ids, path })
-export const exportVaultJson = (path: string) => invoke<void>('export_vault_json', { path })
+/** Resolves to the number of items left out because their collection is locked. */
+export const exportVaultJson = (path: string) => invoke<number>('export_vault_json', { path })
 export const importJson = (path: string) => invoke<ImportReport>('import_json', { path })
 export const importMarkdown = (paths: string[]) => invoke<ImportReport>('import_markdown', { paths })

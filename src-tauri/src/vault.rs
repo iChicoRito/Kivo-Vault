@@ -9,7 +9,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::database::DatabaseState;
+use crate::database::{
+    ensure_collection_accessible, ensure_item_accessible, locked_collection_ids, locked_filter_sql,
+    DatabaseState,
+};
 use crate::encryption::{self, ProtectedItem};
 use crate::security::{hash_secret, secret_matches};
 
@@ -391,6 +394,7 @@ fn read_item_summaries(
     files_dir: &Path,
     filter: Option<&ItemFilter>,
     key: Option<&[u8; 32]>,
+    locked: &[String],
 ) -> Result<Vec<ItemSummary>, String> {
     // Trashed listings flip the scope and always order by the deletion stamp.
     let trashed = filter.and_then(|filter| filter.trashed) == Some(true);
@@ -398,10 +402,15 @@ fn read_item_summaries(
         "SELECT {ITEM_SUMMARY_COLUMNS}
          FROM items i
          LEFT JOIN files f ON f.item_id = i.id
-         WHERE i.deleted_at IS {}",
-        if trashed { "NOT NULL" } else { "NULL" }
+         WHERE i.deleted_at IS {}{}",
+        if trashed { "NOT NULL" } else { "NULL" },
+        locked_filter_sql("i.collection_id", locked)
     );
-    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    let mut values: Vec<rusqlite::types::Value> = locked
+        .iter()
+        .cloned()
+        .map(rusqlite::types::Value::Text)
+        .collect();
     let mut matches = HashMap::new();
 
     if let Some(filter) = filter {
@@ -592,20 +601,13 @@ fn read_collections(connection: &Connection) -> rusqlite::Result<Vec<Collection>
     Ok(collections)
 }
 
-// Items and live credentials share one tag list so the shared TagPicker sees
-// every tag regardless of which feature created it. An id only counts once.
+// Item tags only. Password tags are encrypted with the rest of each credential,
+// so they stay inside the Passwords page. An item only counts once per tag.
 pub(crate) fn read_tags(connection: &Connection) -> rusqlite::Result<Vec<Tag>> {
     let mut statement = connection.prepare(
-        "SELECT MIN(value) AS name, COUNT(DISTINCT source_id) AS count
-         FROM (
-           SELECT i.id AS source_id, value
-           FROM items i, json_each(i.tags)
-           WHERE i.deleted_at IS NULL
-           UNION ALL
-           SELECT c.id AS source_id, value
-           FROM credentials c, json_each(c.tags)
-           WHERE c.deleted_at IS NULL
-         )
+        "SELECT MIN(value) AS name, COUNT(DISTINCT i.id) AS count
+         FROM items i, json_each(i.tags)
+         WHERE i.deleted_at IS NULL
          GROUP BY lower(value)
          ORDER BY MIN(value) COLLATE NOCASE ASC",
     )?;
@@ -1555,10 +1557,20 @@ fn write_import(
     Ok(id)
 }
 
+fn ensure_items_accessible(
+    connection: &Connection,
+    state: &DatabaseState,
+    ids: &[String],
+) -> Result<(), String> {
+    ids.iter()
+        .try_for_each(|id| ensure_item_accessible(connection, state, id))
+}
+
 fn load_item_with_state(state: &DatabaseState, id: &str) -> Result<Item, String> {
     let connection = state.require_connection()?;
     let connection = connection.as_ref().expect("checked above");
     let key = encryption::key_if_enabled(connection, state.content_key())?;
+    ensure_item_accessible(connection, state, id)?;
 
     let item = read_item(connection, state.files_dir(), id)
         .map_err(|error| format!("Could not read the item: {error}"))?;
@@ -1588,7 +1600,15 @@ fn list_items_with_state(
     let connection = connection.as_ref().expect("checked above");
     let key = encryption::key_if_enabled(connection, state.content_key())?;
 
-    read_item_summaries(connection, state.files_dir(), filter, key.as_ref())
+    if let Some(collection_id) = filter
+        .and_then(|filter| filter.collection_id.as_deref())
+        .filter(|value| !value.is_empty())
+    {
+        ensure_collection_accessible(connection, state, collection_id)?;
+    }
+    let locked = locked_collection_ids(connection, state)?;
+
+    read_item_summaries(connection, state.files_dir(), filter, key.as_ref(), &locked)
         .map_err(|error| format!("Could not list the items: {error}"))
 }
 
@@ -1597,6 +1617,9 @@ fn save_item_with_state(state: &DatabaseState, input: &ItemInput) -> Result<Item
         let mut connection = state.require_connection()?;
         let connection = connection.as_mut().expect("checked above");
         let key = encryption::key_if_enabled(connection, state.content_key())?;
+        if let Some(id) = input.id.as_deref() {
+            ensure_item_accessible(connection, state, id)?;
+        }
         write_item(connection, input, key.as_ref())?
     };
 
@@ -1609,8 +1632,10 @@ fn set_item_tags_with_state(
     tags: &[String],
 ) -> Result<Vec<String>, String> {
     let mut connection = state.require_connection()?;
+    let connection = connection.as_mut().expect("checked above");
+    ensure_item_accessible(connection, state, id)?;
 
-    replace_item_tags(connection.as_mut().expect("checked above"), id, tags)
+    replace_item_tags(connection, id, tags)
 }
 
 fn list_collections_with_state(state: &DatabaseState) -> Result<Vec<Collection>, String> {
@@ -1645,6 +1670,7 @@ fn list_item_versions_with_state(
     if kind.as_deref() != Some("note") {
         return Err("Item is not a note".into());
     }
+    ensure_item_accessible(connection, state, item_id)?;
     read_versions(connection, item_id, key.as_ref())
         .map_err(|error| format!("Could not list versions: {error}"))
 }
@@ -1666,6 +1692,7 @@ fn restore_item_version_with_state(
         ).optional().map_err(|error| format!("Could not restore version: {error}"))?;
         let (id, title, stored_content, encrypted) =
             version.ok_or_else(|| "Version was not found".to_string())?;
+        ensure_item_accessible(&tx, state, &id)?;
         let content = match (&key, encrypted) {
             (Some(key), Some(bytes)) => encryption::decrypt_version(key, version_id, &bytes)
                 .map_err(|error| format!("Could not restore version: {error}"))?,
@@ -1732,6 +1759,7 @@ fn read_item_file_with_state(state: &DatabaseState, id: &str) -> Result<ItemFile
         let connection = state.require_connection()?;
         let connection = connection.as_ref().expect("checked above");
         let key = encryption::key_if_enabled(connection, state.content_key())?;
+        ensure_item_accessible(connection, state, id)?;
         let row: Option<(String, String, i64, String, i64)> = connection.query_row(
             "SELECT f.stored_name, f.original_name, f.byte_size, f.imported_at, f.encrypted FROM files f JOIN items i ON i.id = f.item_id WHERE i.id = ?1 AND i.kind = 'file' AND i.deleted_at IS NULL",
             params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
@@ -1855,20 +1883,35 @@ fn load_storage_report_with_state(state: &DatabaseState) -> Result<StorageReport
     let page_size: i64 = connection
         .query_row("PRAGMA page_size", [], |row| row.get(0))
         .map_err(|error| error.to_string())?;
-    let mut statement = connection.prepare("SELECT f.item_id, i.title, f.original_name, f.byte_size, f.imported_at FROM files f JOIN items i ON i.id=f.item_id ORDER BY f.byte_size DESC, f.item_id ASC").map_err(|error| error.to_string())?;
-    let files: Vec<StorageFile> = statement
+    let locked = locked_collection_ids(connection, state)?;
+    let mut statement = connection.prepare("SELECT f.item_id, i.title, f.original_name, f.byte_size, f.imported_at, i.collection_id FROM files f JOIN items i ON i.id=f.item_id ORDER BY f.byte_size DESC, f.item_id ASC").map_err(|error| error.to_string())?;
+    let rows: Vec<(StorageFile, Option<String>)> = statement
         .query_map([], |row| {
-            Ok(StorageFile {
-                item_id: row.get(0)?,
-                title: row.get(1)?,
-                original_name: row.get(2)?,
-                byte_size: row.get(3)?,
-                imported_at: row.get(4)?,
-            })
+            Ok((
+                StorageFile {
+                    item_id: row.get(0)?,
+                    title: row.get(1)?,
+                    original_name: row.get(2)?,
+                    byte_size: row.get(3)?,
+                    imported_at: row.get(4)?,
+                },
+                row.get(5)?,
+            ))
         })
         .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<_>>()
         .map_err(|error| error.to_string())?;
+    // Sizes still count toward the totals; names of locked files stay out of
+    // the largest-files list.
+    let mut largest = Vec::new();
+    let mut files = Vec::new();
+    for (file, collection_id) in rows {
+        let hidden = collection_id.is_some_and(|id| locked.contains(&id));
+        if !hidden && largest.len() < 10 {
+            largest.push(file.clone());
+        }
+        files.push(file);
+    }
     let mut groups: Vec<StorageGroup> = ["Images", "PDFs", "Text", "Other"]
         .iter()
         .map(|label| StorageGroup {
@@ -1900,7 +1943,7 @@ fn load_storage_report_with_state(state: &DatabaseState) -> Result<StorageReport
         file_bytes,
         file_count: files.len() as i64,
         groups,
-        largest: files.into_iter().take(10).collect(),
+        largest,
     })
 }
 
@@ -1911,7 +1954,9 @@ fn set_item_pinned_with_state(
 ) -> Result<Item, String> {
     {
         let mut connection = state.require_connection()?;
-        write_item_pin(connection.as_mut().expect("checked above"), id, pinned)?;
+        let connection = connection.as_mut().expect("checked above");
+        ensure_item_accessible(connection, state, id)?;
+        write_item_pin(connection, id, pinned)?;
     }
 
     load_item_with_state(state, id)
@@ -1923,34 +1968,40 @@ fn set_items_favorite_with_state(
     favorite: bool,
 ) -> Result<(), String> {
     let mut connection = state.require_connection()?;
+    let connection = connection.as_mut().expect("checked above");
+    ensure_items_accessible(connection, state, ids)?;
 
-    write_items_favorite(connection.as_mut().expect("checked above"), ids, favorite)
+    write_items_favorite(connection, ids, favorite)
 }
 
+// Moving into a locked collection reads nothing, so only the items' current
+// collections must be open.
 fn move_items_to_collection_with_state(
     state: &DatabaseState,
     ids: &[String],
     collection_id: Option<&str>,
 ) -> Result<(), String> {
     let mut connection = state.require_connection()?;
+    let connection = connection.as_mut().expect("checked above");
+    ensure_items_accessible(connection, state, ids)?;
 
-    write_items_collection(
-        connection.as_mut().expect("checked above"),
-        ids,
-        collection_id,
-    )
+    write_items_collection(connection, ids, collection_id)
 }
 
 fn trash_items_with_state(state: &DatabaseState, ids: &[String]) -> Result<(), String> {
     let mut connection = state.require_connection()?;
+    let connection = connection.as_mut().expect("checked above");
+    ensure_items_accessible(connection, state, ids)?;
 
-    write_trashed_items(connection.as_mut().expect("checked above"), ids)
+    write_trashed_items(connection, ids)
 }
 
 fn restore_items_with_state(state: &DatabaseState, ids: &[String]) -> Result<(), String> {
     let mut connection = state.require_connection()?;
+    let connection = connection.as_mut().expect("checked above");
+    ensure_items_accessible(connection, state, ids)?;
 
-    write_restored_items(connection.as_mut().expect("checked above"), ids)
+    write_restored_items(connection, ids)
 }
 
 fn delete_items_permanently_with_state(
@@ -1958,12 +2009,10 @@ fn delete_items_permanently_with_state(
     ids: &[String],
 ) -> Result<(), String> {
     let mut connection = state.require_connection()?;
+    let connection = connection.as_mut().expect("checked above");
+    ensure_items_accessible(connection, state, ids)?;
 
-    remove_items_permanently(
-        connection.as_mut().expect("checked above"),
-        state.files_dir(),
-        ids,
-    )
+    remove_items_permanently(connection, state.files_dir(), ids)
 }
 
 fn load_vault_summary_with_state(state: &DatabaseState) -> Result<VaultSummary, String> {
@@ -2037,7 +2086,18 @@ fn save_collection_with_state(
 ) -> Result<Collection, String> {
     let id = {
         let mut connection = state.require_connection()?;
-        write_collection(connection.as_mut().expect("checked above"), input)?
+        let connection = connection.as_mut().expect("checked above");
+        // Renaming or changing the lock of a protected collection needs it open.
+        if let Some(id) = input.id.as_deref() {
+            ensure_collection_accessible(connection, state, id)?;
+        }
+        let id = write_collection(connection, input)?;
+        // Whoever just set a new secret knows it, so the collection stays open
+        // for them until the app locks.
+        if input.secret.is_some() {
+            state.unlock_collection(&id);
+        }
+        id
     };
 
     let connection = state.require_connection()?;
@@ -2049,8 +2109,11 @@ fn save_collection_with_state(
 
 fn delete_collection_with_state(state: &DatabaseState, id: &str) -> Result<(), String> {
     let mut connection = state.require_connection()?;
+    let connection = connection.as_mut().expect("checked above");
+    // Deleting would leave the items loose, so it needs the collection open.
+    ensure_collection_accessible(connection, state, id)?;
 
-    remove_collection(connection.as_mut().expect("checked above"), id)
+    remove_collection(connection, id)
 }
 
 fn verify_collection_secret_with_state(
@@ -2073,10 +2136,12 @@ fn verify_collection_secret_with_state(
         .optional()
         .map_err(|error| format!("Could not read the collection: {error}"))?;
 
-    match stored {
-        Some(Some(hash)) => Ok(secret_matches(secret.trim(), &hash)),
-        _ => Ok(false),
+    let matched = matches!(stored, Some(Some(hash)) if secret_matches(secret.trim(), &hash));
+    if matched {
+        state.unlock_collection(id);
     }
+
+    Ok(matched)
 }
 
 fn list_tags_with_state(state: &DatabaseState) -> Result<Vec<Tag>, String> {
@@ -2096,6 +2161,7 @@ fn managed_file_path_with_state(state: &DatabaseState, id: &str) -> Result<PathB
         let connection = state.require_connection()?;
         let connection = connection.as_ref().expect("checked above");
         let key = encryption::key_if_enabled(connection, state.content_key())?;
+        ensure_item_accessible(connection, state, id)?;
         let row: Option<ManagedFileRow> = connection
             .query_row(
                 "SELECT i.kind, f.stored_name, f.encrypted, f.original_name
@@ -2174,6 +2240,7 @@ fn source_url_with_state(state: &DatabaseState, id: &str) -> Result<String, Stri
     let connection = state.require_connection()?;
     let connection = connection.as_ref().expect("checked above");
     let key = encryption::key_if_enabled(connection, state.content_key())?;
+    ensure_item_accessible(connection, state, id)?;
 
     let row: Option<(String, Option<String>)> = connection
         .query_row(
@@ -4316,6 +4383,90 @@ mod tests {
             save_collection_with_state(&state, &collection_input("Open")).expect("create open");
         assert!(!verify_collection_secret_with_state(&state, &open.id, "123456").expect("verify"));
         assert!(!verify_collection_secret_with_state(&state, "missing", "1234").expect("verify"));
+    }
+
+    #[test]
+    fn a_locked_collection_hides_its_items_until_unlocked() {
+        let vault = TempVault::new("collection-enforced");
+        let state = vault.state();
+
+        let mut input = collection_input("Private");
+        input.protection = Some("pin".to_string());
+        input.secret = Some("123456".to_string());
+        let private = save_collection_with_state(&state, &input).expect("create locked");
+
+        let mut hidden = note_input("Hidden note", "secret body");
+        hidden.collection_id = Some(private.id.clone());
+        let hidden = save_item_with_state(&state, &hidden).expect("save hidden");
+        let open = save_item_with_state(&state, &note_input("Open note", "body")).expect("save");
+
+        // The creator keeps it open; an app lock closes it.
+        state.clear_unlocked_collections();
+
+        let ids = |state: &DatabaseState| -> Vec<String> {
+            list_items_with_state(state, None)
+                .expect("list")
+                .into_iter()
+                .map(|item| item.id)
+                .collect()
+        };
+        assert_eq!(ids(&state), vec![open.id.clone()]);
+
+        let search = ItemFilter {
+            query: Some("secret".to_string()),
+            ..Default::default()
+        };
+        assert!(list_items_with_state(&state, Some(&search)).expect("search").is_empty());
+
+        let in_collection = ItemFilter {
+            collection_id: Some(private.id.clone()),
+            ..Default::default()
+        };
+        for error in [
+            list_items_with_state(&state, Some(&in_collection)).map(|_| ()).unwrap_err(),
+            load_item_with_state(&state, &hidden.id).map(|_| ()).unwrap_err(),
+            list_item_versions_with_state(&state, &hidden.id).map(|_| ()).unwrap_err(),
+            trash_items_with_state(&state, std::slice::from_ref(&hidden.id)).unwrap_err(),
+            move_items_to_collection_with_state(&state, std::slice::from_ref(&hidden.id), None)
+                .unwrap_err(),
+            delete_collection_with_state(&state, &private.id).unwrap_err(),
+            save_collection_with_state(
+                &state,
+                &CollectionInput {
+                    id: Some(private.id.clone()),
+                    name: "Private".to_string(),
+                    icon: None,
+                    protection: Some("none".to_string()),
+                    secret: None,
+                },
+            )
+            .map(|_| ())
+            .unwrap_err(),
+        ] {
+            assert_eq!(error, crate::database::COLLECTION_LOCKED);
+        }
+
+        // Moving a loose item in reads nothing, so it is allowed while locked.
+        move_items_to_collection_with_state(
+            &state,
+            std::slice::from_ref(&open.id),
+            Some(&private.id),
+        )
+        .expect("move into locked collection");
+        assert!(ids(&state).is_empty());
+
+        assert!(!verify_collection_secret_with_state(&state, &private.id, "000000").unwrap());
+        assert!(load_item_with_state(&state, &hidden.id).is_err());
+
+        assert!(verify_collection_secret_with_state(&state, &private.id, "123456").unwrap());
+        assert_eq!(ids(&state).len(), 2);
+        assert_eq!(
+            load_item_with_state(&state, &hidden.id).expect("open after unlock").content,
+            Some("secret body".to_string())
+        );
+
+        state.clear_unlocked_collections();
+        assert!(ids(&state).is_empty());
     }
 
     #[test]

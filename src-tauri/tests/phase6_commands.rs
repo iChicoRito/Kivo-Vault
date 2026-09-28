@@ -170,7 +170,7 @@ fn export_vault_json_writes_files_and_refuses_while_locked() {
     let keys = ContentKeyState::default();
     let plain_path = workspace.path("plain/kivo-vault.json");
     fs::create_dir_all(plain_path.parent().unwrap()).unwrap();
-    portability::export_vault_into(&connection, &files, &keys, &plain_path).unwrap();
+    portability::export_vault_into(&connection, &files, &keys, &plain_path, &[]).unwrap();
 
     let plain: serde_json::Value = serde_json::from_slice(&fs::read(&plain_path).unwrap()).unwrap();
     assert_eq!(plain["items"].as_array().unwrap().len(), 2);
@@ -189,7 +189,7 @@ fn export_vault_json_writes_files_and_refuses_while_locked() {
     keys.store(key).unwrap();
     let unlocked_path = workspace.path("unlocked/kivo-vault.json");
     fs::create_dir_all(unlocked_path.parent().unwrap()).unwrap();
-    portability::export_vault_into(&connection, &files, &keys, &unlocked_path).unwrap();
+    portability::export_vault_into(&connection, &files, &keys, &unlocked_path, &[]).unwrap();
     assert!(fs::read_to_string(&unlocked_path).unwrap().contains("body"));
     assert_eq!(
         fs::read(unlocked_path.parent().unwrap().join("files/stored.bin")).unwrap(),
@@ -201,7 +201,7 @@ fn export_vault_json_writes_files_and_refuses_while_locked() {
     let locked_path = workspace.path("locked/kivo-vault.json");
     fs::create_dir_all(locked_path.parent().unwrap()).unwrap();
     let error =
-        portability::export_vault_into(&connection, &files, &keys, &locked_path).unwrap_err();
+        portability::export_vault_into(&connection, &files, &keys, &locked_path, &[]).unwrap_err();
     assert!(
         error.contains("Vault is locked"),
         "unexpected error: {error}"

@@ -127,21 +127,182 @@ pub struct CredentialFilter {
     pub trashed: Option<bool>,
 }
 
-// The raw credential row before the password is decrypted and tags are parsed.
-struct StoredCredential {
-    id: String,
+/// Every field a person typed, sealed as one encrypted blob per row. Only the
+/// id, favorite flag, trash stamp and dates stay readable in the database.
+#[derive(Serialize, Deserialize)]
+struct CredentialData {
     service: String,
     username: String,
-    password_nonce: Vec<u8>,
-    password_ciphertext: Vec<u8>,
+    password: String,
     url: String,
     category: String,
-    tags_json: String,
+    tags: Vec<String>,
     notes: String,
-    is_favorite: bool,
-    deleted_at: Option<String>,
-    created_at: String,
-    updated_at: String,
+}
+
+/// Ties each blob to its row, so blobs cannot be swapped between rows.
+fn credential_aad(id: &str) -> Vec<u8> {
+    format!("kivo:credential:v2:{id}").into_bytes()
+}
+
+fn seal_credential(
+    key: &[u8; KEY_LENGTH],
+    id: &str,
+    data: &CredentialData,
+) -> Result<([u8; NONCE_LENGTH], Vec<u8>), String> {
+    let json = serde_json::to_vec(data).map_err(|_| "Could not protect the data".to_string())?;
+    let nonce = random_bytes::<NONCE_LENGTH>()?;
+    let ciphertext = encrypt(key, &nonce, &json, &credential_aad(id))?;
+    Ok((nonce, ciphertext))
+}
+
+fn open_credential(
+    key: &[u8; KEY_LENGTH],
+    id: &str,
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> Result<CredentialData, String> {
+    let nonce: [u8; NONCE_LENGTH] = nonce
+        .try_into()
+        .map_err(|_| "Could not read the credential".to_string())?;
+    let json = decrypt(key, &nonce, ciphertext, &credential_aad(id))
+        .map_err(|_| "Could not read the credential".to_string())?;
+    serde_json::from_slice(&json).map_err(|_| "Could not read the credential".to_string())
+}
+
+/// Rows written before every field was encrypted: readable columns plus a
+/// password sealed with the old fixed AAD. Converted once the key is known.
+fn convert_legacy_credentials(
+    connection: &mut Connection,
+    key: &[u8; KEY_LENGTH],
+) -> Result<usize, String> {
+    let fail = |error: rusqlite::Error| format!("Could not update the password vault: {error}");
+    let transaction = connection.transaction().map_err(fail)?;
+    let rows = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT id, service, username, password_nonce, password_ciphertext, url,
+                        category, tags, notes
+                 FROM credentials WHERE data_ciphertext IS NULL",
+            )
+            .map_err(fail)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            })
+            .map_err(fail)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(fail)?;
+        rows
+    };
+
+    for (id, service, username, nonce, ciphertext, url, category, tags, notes) in &rows {
+        let nonce: [u8; NONCE_LENGTH] = nonce
+            .as_slice()
+            .try_into()
+            .map_err(|_| "Could not read the credential".to_string())?;
+        let password = decrypt(key, &nonce, ciphertext, CREDENTIAL_AAD)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .ok_or_else(|| "Could not read the credential".to_string())?;
+        let data = CredentialData {
+            service: service.clone(),
+            username: username.clone(),
+            password,
+            url: url.clone(),
+            category: category.clone(),
+            tags: parse_tags(tags),
+            notes: notes.clone(),
+        };
+        write_sealed(&transaction, key, id, &data)?;
+    }
+
+    transaction.commit().map_err(fail)?;
+    Ok(rows.len())
+}
+
+/// Stores the blob and blanks every readable copy of the fields.
+fn write_sealed(
+    connection: &Connection,
+    key: &[u8; KEY_LENGTH],
+    id: &str,
+    data: &CredentialData,
+) -> Result<usize, String> {
+    let (nonce, ciphertext) = seal_credential(key, id, data)?;
+    connection
+        .execute(
+            "UPDATE credentials
+             SET data_nonce = ?1, data_ciphertext = ?2,
+                 service = '', username = '', url = '', category = '', tags = '[]',
+                 notes = '', password_nonce = x'', password_ciphertext = x''
+             WHERE id = ?3",
+            params![nonce.as_slice(), ciphertext, id],
+        )
+        .map_err(|error| format!("Could not save the credential: {error}"))
+}
+
+/// Reads and decrypts credentials in database order.
+fn read_credentials(
+    connection: &Connection,
+    key: &[u8; KEY_LENGTH],
+    condition: &str,
+    values: &[rusqlite::types::Value],
+) -> Result<Vec<Credential>, String> {
+    let sql = format!(
+        "SELECT id, data_nonce, data_ciphertext, is_favorite, deleted_at, created_at, updated_at
+         FROM credentials
+         WHERE data_ciphertext IS NOT NULL AND {condition}
+         ORDER BY is_favorite DESC, updated_at DESC"
+    );
+    let fail = |error: rusqlite::Error| format!("Could not read the credentials: {error}");
+    let mut statement = connection.prepare(&sql).map_err(fail)?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(values.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, i64>(3)? != 0,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(fail)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(fail)?;
+
+    rows.into_iter()
+        .map(
+            |(id, nonce, ciphertext, is_favorite, deleted_at, created_at, updated_at)| {
+                let data = open_credential(key, &id, &nonce, &ciphertext)?;
+                Ok(Credential {
+                    id,
+                    service: data.service,
+                    username: data.username,
+                    url: data.url,
+                    category: data.category,
+                    tags: data.tags,
+                    is_favorite,
+                    deleted_at,
+                    created_at,
+                    updated_at,
+                    password: data.password,
+                    notes: data.notes,
+                })
+            },
+        )
+        .collect()
 }
 
 struct VaultConfigRow {
@@ -338,98 +499,68 @@ fn normalize_tags(tags: &[String]) -> Vec<String> {
     names
 }
 
-// `%` and `_` are LIKE wildcards, so a literal query escapes them and the SQL
-// uses `ESCAPE '\'`. The backslash itself must be escaped first.
-fn escaped_like_pattern(query: &str) -> String {
-    let mut pattern = String::with_capacity(query.len() + 2);
-    pattern.push('%');
-
-    for character in query.chars() {
-        if matches!(character, '\\' | '%' | '_') {
-            pattern.push('\\');
-        }
-
-        pattern.push(character);
-    }
-
-    pattern.push('%');
-    pattern
-}
-
+// The fields are encrypted, so SQL narrows only by trash and favorite; the
+// rest of the filter runs on the decrypted rows. A personal vault is small.
 fn read_credential_summaries(
     connection: &Connection,
+    key: &[u8; KEY_LENGTH],
     filter: Option<&CredentialFilter>,
-) -> rusqlite::Result<Vec<CredentialSummary>> {
+) -> Result<Vec<CredentialSummary>, String> {
     // Trashed listings flip the scope and show only deleted rows.
     let trashed = filter.and_then(|filter| filter.trashed) == Some(true);
-    let mut sql = format!(
-        "SELECT c.id, c.service, c.username, c.url, c.category, c.tags, c.is_favorite,
-                c.deleted_at, c.created_at, c.updated_at
-         FROM credentials c
-         WHERE c.deleted_at IS {}",
+    let mut condition = format!(
+        "deleted_at IS {}",
         if trashed { "NOT NULL" } else { "NULL" }
     );
-    let mut values: Vec<rusqlite::types::Value> = Vec::new();
-
-    if let Some(filter) = filter {
-        if let Some(category) = filter.category.as_deref().filter(|value| !value.is_empty()) {
-            sql.push_str(" AND c.category = ?");
-            values.push(rusqlite::types::Value::Text(category.to_string()));
-        }
-
-        if let Some(tag) = filter.tag.as_deref().filter(|value| !value.is_empty()) {
-            sql.push_str(
-                " AND EXISTS (SELECT 1 FROM json_each(c.tags)
-                              WHERE value = ? COLLATE NOCASE)",
-            );
-            values.push(rusqlite::types::Value::Text(tag.to_string()));
-        }
-
-        if filter.favorite == Some(true) {
-            sql.push_str(" AND c.is_favorite = 1");
-        }
-
-        if let Some(query) = filter
-            .query
-            .as_deref()
-            .map(str::trim)
-            .filter(|query| !query.is_empty())
-        {
-            let pattern = escaped_like_pattern(query);
-            sql.push_str(
-                " AND (c.service LIKE ? ESCAPE '\\'
-                    OR c.username LIKE ? ESCAPE '\\'
-                    OR c.category LIKE ? ESCAPE '\\'
-                    OR EXISTS (SELECT 1 FROM json_each(c.tags)
-                               WHERE value LIKE ? ESCAPE '\\'))",
-            );
-
-            for _ in 0..4 {
-                values.push(rusqlite::types::Value::Text(pattern.clone()));
-            }
-        }
+    if filter.and_then(|filter| filter.favorite) == Some(true) {
+        condition.push_str(" AND is_favorite = 1");
     }
 
-    sql.push_str(" ORDER BY c.is_favorite DESC, c.updated_at DESC");
+    let category = filter
+        .and_then(|filter| filter.category.as_deref())
+        .filter(|value| !value.is_empty());
+    let tag = filter
+        .and_then(|filter| filter.tag.as_deref())
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase);
+    let query = filter
+        .and_then(|filter| filter.query.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase);
 
-    let mut statement = connection.prepare(&sql)?;
-
-    let summaries = statement
-        .query_map(rusqlite::params_from_iter(values.iter()), |row| {
-            Ok(CredentialSummary {
-                id: row.get(0)?,
-                service: row.get(1)?,
-                username: row.get(2)?,
-                url: row.get(3)?,
-                category: row.get(4)?,
-                tags: parse_tags(&row.get::<_, String>(5)?),
-                is_favorite: row.get::<_, i64>(6)? != 0,
-                deleted_at: row.get(7)?,
-                created_at: row.get(8)?,
-                updated_at: row.get(9)?,
+    let summaries = read_credentials(connection, key, &condition, &[])?
+        .into_iter()
+        .filter(|credential| category.is_none_or(|category| credential.category == category))
+        .filter(|credential| {
+            tag.as_ref().is_none_or(|tag| {
+                credential
+                    .tags
+                    .iter()
+                    .any(|value| value.to_lowercase() == *tag)
             })
-        })?
-        .collect::<rusqlite::Result<Vec<CredentialSummary>>>()?;
+        })
+        .filter(|credential| {
+            query.as_ref().is_none_or(|query| {
+                [&credential.service, &credential.username, &credential.category]
+                    .into_iter()
+                    .chain(credential.tags.iter())
+                    .any(|value| value.to_lowercase().contains(query.as_str()))
+            })
+        })
+        .map(|credential| CredentialSummary {
+            id: credential.id,
+            service: credential.service,
+            username: credential.username,
+            url: credential.url,
+            category: credential.category,
+            tags: credential.tags,
+            is_favorite: credential.is_favorite,
+            deleted_at: credential.deleted_at,
+            created_at: credential.created_at,
+            updated_at: credential.updated_at,
+        })
+        .collect();
 
     Ok(summaries)
 }
@@ -439,64 +570,14 @@ fn read_credential(
     key: &[u8; KEY_LENGTH],
     id: &str,
 ) -> Result<Option<Credential>, String> {
-    let stored = connection
-        .query_row(
-            "SELECT id, service, username, password_nonce, password_ciphertext, url,
-                    category, tags, notes, is_favorite, deleted_at, created_at, updated_at
-             FROM credentials
-             WHERE id = ?1",
-            params![id],
-            |row| {
-                Ok(StoredCredential {
-                    id: row.get(0)?,
-                    service: row.get(1)?,
-                    username: row.get(2)?,
-                    password_nonce: row.get(3)?,
-                    password_ciphertext: row.get(4)?,
-                    url: row.get(5)?,
-                    category: row.get(6)?,
-                    tags_json: row.get(7)?,
-                    notes: row.get(8)?,
-                    is_favorite: row.get::<_, i64>(9)? != 0,
-                    deleted_at: row.get(10)?,
-                    created_at: row.get(11)?,
-                    updated_at: row.get(12)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|error| format!("Could not read the credential: {error}"))?;
-
-    let Some(stored) = stored else {
-        return Ok(None);
-    };
-
-    let nonce: [u8; NONCE_LENGTH] = stored
-        .password_nonce
-        .as_slice()
-        .try_into()
-        .map_err(|_| "Could not read the credential".to_string())?;
-
-    let plaintext = decrypt(key, &nonce, &stored.password_ciphertext, CREDENTIAL_AAD)
-        .map_err(|_| "Could not read the credential".to_string())?;
-
-    let password =
-        String::from_utf8(plaintext).map_err(|_| "Could not read the credential".to_string())?;
-
-    Ok(Some(Credential {
-        id: stored.id,
-        service: stored.service,
-        username: stored.username,
-        url: stored.url,
-        category: stored.category,
-        tags: parse_tags(&stored.tags_json),
-        is_favorite: stored.is_favorite,
-        deleted_at: stored.deleted_at,
-        created_at: stored.created_at,
-        updated_at: stored.updated_at,
-        password,
-        notes: stored.notes,
-    }))
+    Ok(read_credentials(
+        connection,
+        key,
+        "id = ?",
+        &[rusqlite::types::Value::Text(id.to_string())],
+    )?
+    .into_iter()
+    .next())
 }
 
 fn write_credential(
@@ -514,14 +595,6 @@ fn write_credential(
         return Err("Password is required".to_string());
     }
 
-    let nonce = random_bytes::<NONCE_LENGTH>()?;
-    let ciphertext = encrypt(key, &nonce, input.password.as_bytes(), CREDENTIAL_AAD)?;
-
-    let tags_json = serde_json::to_string(&normalize_tags(&input.tags))
-        .map_err(|error| format!("Could not save the credential: {error}"))?;
-
-    let username = input.username.trim().to_string();
-    let url = input.url.trim().to_string();
     let category = {
         let category = input.category.trim();
 
@@ -531,32 +604,30 @@ fn write_credential(
             category.to_string()
         }
     };
+    let data = CredentialData {
+        service,
+        username: input.username.trim().to_string(),
+        password: input.password.clone(),
+        url: input.url.trim().to_string(),
+        category,
+        tags: normalize_tags(&input.tags),
+        notes: input.notes.clone(),
+    };
     let is_favorite = i64::from(input.is_favorite);
+    let fail = |error: rusqlite::Error| format!("Could not save the credential: {error}");
 
+    let transaction = connection.transaction().map_err(fail)?;
     let id = match &input.id {
         Some(id) => {
-            let updated = connection
+            let updated = transaction
                 .execute(
                     "UPDATE credentials
-                     SET service = ?1, username = ?2, password_nonce = ?3,
-                         password_ciphertext = ?4, url = ?5, category = ?6, tags = ?7,
-                         notes = ?8, is_favorite = ?9,
+                     SET is_favorite = ?1,
                          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                     WHERE id = ?10",
-                    params![
-                        service,
-                        username,
-                        nonce.as_slice(),
-                        ciphertext,
-                        url,
-                        category,
-                        tags_json,
-                        input.notes,
-                        is_favorite,
-                        id
-                    ],
+                     WHERE id = ?2",
+                    params![is_favorite, id],
                 )
-                .map_err(|error| format!("Could not save the credential: {error}"))?;
+                .map_err(fail)?;
 
             if updated == 0 {
                 return Err("Credential was not found".to_string());
@@ -565,35 +636,27 @@ fn write_credential(
             id.clone()
         }
         None => {
-            let id = new_id(connection)
-                .map_err(|error| format!("Could not save the credential: {error}"))?;
+            let id = new_id(&transaction).map_err(fail)?;
 
-            connection
+            // The readable columns are required by the table, so the row starts
+            // blank and the sealed blob is written straight after.
+            transaction
                 .execute(
                     "INSERT INTO credentials
-                       (id, service, username, password_nonce, password_ciphertext, url,
-                        category, tags, notes, is_favorite, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                       (id, service, password_nonce, password_ciphertext, is_favorite,
+                        created_at, updated_at)
+                     VALUES (?1, '', x'', x'', ?2,
                              strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                              strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                    params![
-                        id,
-                        service,
-                        username,
-                        nonce.as_slice(),
-                        ciphertext,
-                        url,
-                        category,
-                        tags_json,
-                        input.notes,
-                        is_favorite
-                    ],
+                    params![id, is_favorite],
                 )
-                .map_err(|error| format!("Could not save the credential: {error}"))?;
+                .map_err(fail)?;
 
             id
         }
     };
+    write_sealed(&transaction, key, &id, &data)?;
+    transaction.commit().map_err(fail)?;
 
     read_credential(connection, key, &id)?
         .ok_or_else(|| "Could not save the credential".to_string())
@@ -716,8 +779,14 @@ fn unlock_vault_with_state(
     master_password: &str,
 ) -> Result<VaultStatus, String> {
     {
-        let connection = db.require_connection()?;
-        let key = unlock_vault_in(connection.as_ref().expect("checked above"), master_password)?;
+        let mut connection = db.require_connection()?;
+        let connection = connection.as_mut().expect("checked above");
+        let key = unlock_vault_in(connection, master_password)?;
+        // Older rows keep readable fields until the key is here to seal them.
+        if convert_legacy_credentials(connection, &key)? > 0 {
+            // Rewrites the file so no copy of the old readable fields is left.
+            let _ = connection.execute_batch("VACUUM");
+        }
         vault.store(key);
     }
 
@@ -734,12 +803,11 @@ fn list_credentials_with_state(
     vault: &VaultKeyState,
     filter: Option<&CredentialFilter>,
 ) -> Result<Vec<CredentialSummary>, String> {
-    vault.require_key()?;
+    let key = vault.require_key()?;
 
     let connection = db.require_connection()?;
 
-    read_credential_summaries(connection.as_ref().expect("checked above"), filter)
-        .map_err(|error| format!("Could not list the credentials: {error}"))
+    read_credential_summaries(connection.as_ref().expect("checked above"), &key, filter)
 }
 
 fn load_credential_with_state(
@@ -1141,7 +1209,7 @@ mod tests {
             .as_ref()
             .expect("connection is initialized")
             .query_row(
-                "SELECT password_ciphertext, password_nonce FROM credentials WHERE id = ?1",
+                "SELECT data_ciphertext, data_nonce FROM credentials WHERE id = ?1",
                 params![id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -1412,14 +1480,39 @@ mod tests {
     #[test]
     fn saved_credentials_store_ciphertext_with_a_fresh_nonce_each_time() {
         let (_workspace, db, vault) = unlocked_vault();
-        let saved = save_credential_with_state(&db, &vault, &credential_input("GitHub", "hunter2"))
-            .expect("save");
+        let mut input = credential_input("GitHub", "hunter2");
+        input.username = "ada@example.com".to_string();
+        input.url = "https://github.com".to_string();
+        input.tags = vec!["WorkTag".to_string()];
+        input.notes = "recovery code 1234".to_string();
+        let saved = save_credential_with_state(&db, &vault, &input).expect("save");
 
         let (first_ciphertext, first_nonce) = raw_secret(&db, &saved.id);
-        assert_ne!(first_ciphertext.as_slice(), b"hunter2");
         assert_eq!(first_nonce.len(), NONCE_LENGTH);
 
-        let mut update = credential_input("GitHub", "hunter2");
+        // Nothing a person typed is readable anywhere in the stored row.
+        let row: String = {
+            let connection = db.require_connection().expect("lock connection");
+            connection
+                .as_ref()
+                .expect("connection is initialized")
+                .query_row(
+                    "SELECT service || username || url || category || tags || notes
+                            || hex(password_ciphertext) || hex(data_ciphertext)
+                     FROM credentials WHERE id = ?1",
+                    params![saved.id],
+                    |row| row.get(0),
+                )
+                .expect("read raw row")
+        };
+        for plain in ["GitHub", "ada@", "github.com", "WorkTag", "recovery", "hunter2"] {
+            assert!(!row.contains(plain), "{plain} is stored readable");
+        }
+        for plain in [&b"GitHub"[..], b"hunter2", b"recovery"] {
+            assert!(!first_ciphertext.windows(plain.len()).any(|window| window == plain));
+        }
+
+        let mut update = input.clone();
         update.id = Some(saved.id.clone());
         save_credential_with_state(&db, &vault, &update).expect("update");
 
@@ -1454,39 +1547,101 @@ mod tests {
     }
 
     #[test]
-    fn live_credential_tags_join_the_shared_tag_list() {
+    fn credential_tags_stay_out_of_the_shared_tag_list() {
         let (_workspace, db, vault) = unlocked_vault();
 
         let mut input = credential_input("GitHub", "secret");
-        input.tags = vec!["Shared".to_string()];
-        let saved = save_credential_with_state(&db, &vault, &input).expect("save");
+        input.tags = vec!["Shared".to_string(), "PasswordOnly".to_string()];
+        save_credential_with_state(&db, &vault, &input).expect("save");
 
+        let connection = db.require_connection().expect("lock connection");
+        let connection = connection.as_ref().expect("connection is initialized");
+        connection
+            .execute(
+                "INSERT INTO items (id, kind, title, tags, created_at, updated_at)
+                 VALUES ('item-shared', 'note', 'Shared note', '[\"Shared\"]',
+                         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+                [],
+            )
+            .expect("seed item");
+
+        let tags = crate::vault::read_tags(connection).expect("read tags");
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "Shared");
+        assert_eq!(tags[0].count, 1);
+    }
+
+    #[test]
+    fn unlock_converts_rows_saved_by_older_versions() {
+        let (_workspace, db, vault) = unlocked_vault();
+        let key = vault.require_key().expect("key");
+
+        // A row as older versions wrote it: readable fields, sealed password.
         {
             let connection = db.require_connection().expect("lock connection");
             let connection = connection.as_ref().expect("connection is initialized");
-
+            let nonce = random_bytes::<NONCE_LENGTH>().unwrap();
+            let ciphertext = encrypt(&key, &nonce, b"old-secret", CREDENTIAL_AAD).unwrap();
             connection
                 .execute(
-                    "INSERT INTO items (id, kind, title, tags, created_at, updated_at)
-                     VALUES ('item-shared', 'note', 'Shared note', '[\"Shared\"]',
-                             '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
-                    [],
+                    "INSERT INTO credentials (id, service, username, password_nonce,
+                       password_ciphertext, url, category, tags, notes, created_at, updated_at)
+                     VALUES ('legacy', 'Bank', 'ada', ?1, ?2, 'https://bank.example', 'Banking',
+                             '[\"Money\"]', 'pin hint', 'now', 'now')",
+                    params![nonce.as_slice(), ciphertext],
                 )
-                .expect("seed item");
-
-            let tags = crate::vault::read_tags(connection).expect("read tags");
-            assert_eq!(tags.len(), 1);
-            assert_eq!(tags[0].name, "Shared");
-            assert_eq!(tags[0].count, 2);
+                .expect("seed legacy row");
         }
 
-        // A trashed credential drops out of the shared list.
-        trash_credentials_with_state(&db, &vault, std::slice::from_ref(&saved.id)).expect("trash");
+        lock_vault_with_state(&db, &vault).expect("lock");
+        unlock_vault_with_state(&db, &vault, "correct horse battery").expect("unlock");
+
+        let loaded = load_credential_with_state(&db, &vault, "legacy").expect("load");
+        assert_eq!(loaded.service, "Bank");
+        assert_eq!(loaded.username, "ada");
+        assert_eq!(loaded.password, "old-secret");
+        assert_eq!(loaded.url, "https://bank.example");
+        assert_eq!(loaded.category, "Banking");
+        assert_eq!(loaded.tags, vec!["Money".to_string()]);
+        assert_eq!(loaded.notes, "pin hint");
 
         let connection = db.require_connection().expect("lock connection");
-        let tags = crate::vault::read_tags(connection.as_ref().expect("connection is initialized"))
-            .expect("read tags after trash");
-        assert_eq!(tags.len(), 1);
-        assert_eq!(tags[0].count, 1);
+        let readable: String = connection
+            .as_ref()
+            .expect("connection is initialized")
+            .query_row(
+                "SELECT service || username || url || category || tags || notes
+                 FROM credentials WHERE id = 'legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read raw row");
+        assert_eq!(readable, "[]");
+    }
+
+    #[test]
+    fn a_blob_moved_to_another_row_does_not_open() {
+        let (_workspace, db, vault) = unlocked_vault();
+        let first = save_credential_with_state(&db, &vault, &credential_input("Bank", "one"))
+            .expect("save first");
+        let second = save_credential_with_state(&db, &vault, &credential_input("Forum", "two"))
+            .expect("save second");
+
+        {
+            let connection = db.require_connection().expect("lock connection");
+            connection
+                .as_ref()
+                .expect("connection is initialized")
+                .execute(
+                    "UPDATE credentials
+                     SET (data_nonce, data_ciphertext) =
+                         (SELECT data_nonce, data_ciphertext FROM credentials WHERE id = ?1)
+                     WHERE id = ?2",
+                    params![first.id, second.id],
+                )
+                .expect("swap blob");
+        }
+
+        assert!(load_credential_with_state(&db, &vault, &second.id).is_err());
     }
 }

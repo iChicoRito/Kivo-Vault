@@ -631,26 +631,35 @@ pub(crate) fn import_markdown_into(
     Ok(report)
 }
 
+/// Items of `locked` collections are left out; the caller decides whether that
+/// is an error (one chosen item) or a count to report (whole vault).
 fn read_items(
     connection: &Connection,
     keys: &ContentKeyState,
     only: Option<&str>,
+    locked: &[String],
 ) -> Result<Vec<PortableItem>, String> {
     let key = encryption::key_if_enabled(connection, keys)?;
     let mut statement = connection
-        .prepare(
+        .prepare(&format!(
             "SELECT i.id, i.kind, i.title, i.description, i.content, i.url, c.name, i.tags,
                     i.is_favorite, i.is_pinned, i.created_at, i.updated_at, i.deleted_at,
                     f.stored_name, f.original_name, f.byte_size
              FROM items i
              LEFT JOIN collections c ON c.id = i.collection_id
              LEFT JOIN files f ON f.item_id = i.id
-             WHERE (?1 IS NULL OR i.id = ?1)
+             WHERE (?1 IS NULL OR i.id = ?1){}
              ORDER BY i.created_at, i.id",
-        )
+            crate::database::locked_filter_sql("i.collection_id", locked)
+        ))
         .map_err(|error| format!("Could not read the vault: {error}"))?;
+    let mut values = vec![match only {
+        Some(id) => rusqlite::types::Value::Text(id.to_string()),
+        None => rusqlite::types::Value::Null,
+    }];
+    values.extend(locked.iter().cloned().map(rusqlite::types::Value::Text));
     let rows = statement
-        .query_map(params![only], |row| {
+        .query_map(rusqlite::params_from_iter(values.iter()), |row| {
             let file = match row.get::<_, Option<String>>(13)? {
                 Some(stored_name) => Some(FileRecord {
                     stored_name,
@@ -785,7 +794,8 @@ pub fn export_note_markdown(
 ) -> Result<(), String> {
     let guard = state.require_connection()?;
     let connection = guard.as_ref().expect("checked above");
-    let item = read_items(connection, state.content_key(), Some(&id))?
+    crate::database::ensure_item_accessible(connection, &state, &id)?;
+    let item = read_items(connection, state.content_key(), Some(&id), &[])?
         .into_iter()
         .next()
         .ok_or("That note no longer exists")?;
@@ -804,7 +814,8 @@ pub fn export_items_json(
     let keys = state.content_key();
     let mut items = Vec::new();
     for id in &ids {
-        if let Some(item) = read_items(connection, keys, Some(id))?.into_iter().next() {
+        crate::database::ensure_item_accessible(connection, &state, id)?;
+        if let Some(item) = read_items(connection, keys, Some(id), &[])?.into_iter().next() {
             items.push(item);
         }
     }
@@ -823,13 +834,29 @@ pub fn export_items_json(
 }
 
 /// Writes `kivo-vault.json` and a sibling `files/` folder. Builds and decrypts
-/// the whole document first, so a locked vault writes nothing.
+/// the whole document first, so a locked vault writes nothing. Items in
+/// `locked` collections are left out; returns how many were skipped.
 pub(crate) fn export_vault_into(
     connection: &Connection,
     files_dir: &Path,
     keys: &ContentKeyState,
     path: &Path,
-) -> Result<(), String> {
+    locked: &[String],
+) -> Result<usize, String> {
+    let skipped = if locked.is_empty() {
+        0
+    } else {
+        connection
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM items WHERE collection_id IN ({})",
+                    vec!["?"; locked.len()].join(",")
+                ),
+                rusqlite::params_from_iter(locked.iter()),
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("Could not read the vault: {error}"))? as usize
+    };
     let mut statement = connection
         .prepare("SELECT name FROM collections ORDER BY sort_order, name")
         .map_err(|error| format!("Could not read collections: {error}"))?;
@@ -841,19 +868,24 @@ pub(crate) fn export_vault_into(
     let document = VaultDocument {
         format: 1,
         collections,
-        items: read_items(connection, keys, None)?,
+        items: read_items(connection, keys, None, locked)?,
     };
-    write_document(connection, files_dir, keys, &document, path)
+    write_document(connection, files_dir, keys, &document, path)?;
+    Ok(skipped)
 }
 
+/// Returns how many items were left out because their collection is locked.
 #[tauri::command]
-pub fn export_vault_json(path: String, state: State<'_, DatabaseState>) -> Result<(), String> {
+pub fn export_vault_json(path: String, state: State<'_, DatabaseState>) -> Result<usize, String> {
     let guard = state.require_connection()?;
+    let connection = guard.as_ref().expect("checked above");
+    let locked = crate::database::locked_collection_ids(connection, &state)?;
     export_vault_into(
-        guard.as_ref().expect("checked above"),
+        connection,
         state.files_dir(),
         state.content_key(),
         Path::new(&path),
+        &locked,
     )
 }
 

@@ -550,14 +550,20 @@ struct LiveItem {
 fn read_live_items(
     connection: &Connection,
     filter: Option<&ItemFilter>,
+    locked: &[String],
 ) -> Result<Vec<LiveItem>, String> {
-    let mut sql = String::from(
+    let mut sql = format!(
         "SELECT i.id, i.kind, i.title, i.description, i.content, i.is_favorite, i.is_pinned,
                 i.collection_id, i.updated_at, i.tags
          FROM items i
-         WHERE i.deleted_at IS NULL",
+         WHERE i.deleted_at IS NULL{}",
+        crate::database::locked_filter_sql("i.collection_id", locked)
     );
-    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    let mut values: Vec<rusqlite::types::Value> = locked
+        .iter()
+        .cloned()
+        .map(rusqlite::types::Value::Text)
+        .collect();
     if let Some(filter) = filter {
         if let Some(kind) = filter.kind.as_deref().filter(|value| !value.is_empty()) {
             sql.push_str(" AND i.kind = ?");
@@ -635,7 +641,8 @@ pub(crate) fn search_related_items_with_state(
         None
     };
 
-    let items = read_live_items(connection, input.filter.as_ref())?;
+    let locked = crate::database::locked_collection_ids(connection, state)?;
+    let items = read_live_items(connection, input.filter.as_ref(), &locked)?;
     let mut summaries: HashMap<String, ItemSummary> = HashMap::new();
 
     // While encryption is on, `item_vectors` must stay empty, so related search
@@ -750,6 +757,9 @@ fn read_item_text(
     state: &DatabaseState,
     id: &str,
 ) -> Result<Option<ItemText>, String> {
+    if crate::database::ensure_item_accessible(connection, state, id).is_err() {
+        return Ok(None);
+    }
     let row: Option<ItemTextRow> = connection
         .query_row(
             "SELECT kind, title, description, content, tags, deleted_at

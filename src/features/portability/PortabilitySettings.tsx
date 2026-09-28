@@ -7,8 +7,9 @@ export default function PortabilitySettings() {
   const [report, setReport] = useState<ImportReport | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [skippedLocked, setSkippedLocked] = useState(0)
   async function run(action: () => Promise<ImportReport | void>) {
-    setBusy(true); setError(null)
+    setBusy(true); setError(null); setSkippedLocked(0)
     try { const result = await action(); if (result) setReport(result) }
     catch { setError('Could not finish. Check the file you picked and try again.') }
     finally { setBusy(false) }
@@ -25,9 +26,10 @@ export default function PortabilitySettings() {
     <div className="flex flex-wrap gap-3">
       <Button isDisabled={busy} variant="secondary" onPress={() => void run(async () => { const paths = await invoke<string[] | null>('pick_files'); return paths?.length ? importMarkdown(paths) : undefined })}>Import Markdown files</Button>
       <Button isDisabled={busy} variant="secondary" onPress={() => void run(async () => { const path = await invoke<string | null>('pick_file'); return path ? importJson(path) : undefined })}>Import Kivo export</Button>
-      <Button isDisabled={busy} onPress={() => void run(async () => { const path = await pickFolderDestination(); if (path) await exportVaultJson(path) })}>Export everything</Button>
+      <Button isDisabled={busy} onPress={() => void run(async () => { const path = await pickFolderDestination(); if (path) setSkippedLocked((await exportVaultJson(path)) ?? 0) })}>Export everything</Button>
     </div>
     {busy ? <Typography role="status" type="body-sm">Working...</Typography> : null}
+    {skippedLocked > 0 ? <Typography role="status" type="body-sm">Left out {skippedLocked} {skippedLocked === 1 ? 'item' : 'items'} in locked collections. Unlock them and export again to include them.</Typography> : null}
     {report ? <div className="grid gap-1 rounded-xl bg-(--default) px-4 py-3" role="status"><Typography type="body-sm" weight="medium">Imported {report.imported} items.</Typography>{report.skipped.map((entry, index) => <Typography key={`${entry.title}-${index}`} type="body-sm">Skipped {entry.title}: {entry.reason}</Typography>)}{report.losses.map((loss) => <Typography key={loss} color="muted" type="body-xs">{loss}</Typography>)}</div> : null}
     {error ? <Typography className="text-danger" role="alert" type="body-sm">{error}</Typography> : null}
   </Card.Content></Card>

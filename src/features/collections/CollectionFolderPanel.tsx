@@ -50,6 +50,7 @@ const ICON_COMPONENTS: Record<string, IconSvgElement> = {
 const MOVE_ERROR = 'Could not move this item. Try again.'
 const OPEN_ERROR = 'Could not open this item. Try again.'
 const LOAD_ERROR = 'Could not load these items.'
+const LOCKED_NOTE = 'Locked. Open it from Collections to see its items.'
 
 const DROP_TARGET_CLASS = 'outline-2 outline-offset-2 outline-focus'
 
@@ -61,7 +62,7 @@ const MENU_ROW_HEIGHT = 32
 const MENU_WIDTH = 288
 
 type ItemsEntry = {
-  status: 'loading' | 'ready' | 'error'
+  status: 'loading' | 'ready' | 'error' | 'locked'
   items: ItemSummary[]
 }
 
@@ -172,10 +173,12 @@ export function CollectionFolderPanel() {
           [collectionId]: { status: 'ready', items },
         }))
       })
-      .catch(() => {
+      .catch((reason: unknown) => {
+        // The backend refuses a protected collection until it is unlocked.
+        const locked = String(reason).includes('This collection is locked')
         setItemsById((current) => ({
           ...current,
-          [collectionId]: { status: 'error', items: [] },
+          [collectionId]: { status: locked ? 'locked' : 'error', items: [] },
         }))
       })
       .finally(() => {
@@ -294,7 +297,10 @@ export function CollectionFolderPanel() {
 
   // The first collection that holds items starts unfolded, so the panel shows
   // its items right away. An empty first collection would unfold on nothing.
-  const firstWithItems = visible.findIndex((collection) => collection.itemCount > 0)
+  // A locked collection never opens on its own.
+  const firstWithItems = visible.findIndex(
+    (collection) => collection.itemCount > 0 && collection.protection === 'none',
+  )
   const firstOpenIndex = firstWithItems >= 0 ? firstWithItems : 0
 
   useEffect(() => {
@@ -343,7 +349,9 @@ export function CollectionFolderPanel() {
     let children: BranchedMenuChild[]
 
     if (entry?.status === 'loading') children = loadingChildren()
-    else if (entry?.status === 'error') {
+    else if (entry?.status === 'locked') {
+      children = [{ value: `${collection.id}-locked`, disabled: true, label: LOCKED_NOTE }]
+    } else if (entry?.status === 'error') {
       children = [{ value: `${collection.id}-error`, disabled: true, label: LOAD_ERROR }]
     } else {
       children = (entry?.items ?? []).map((item) => {

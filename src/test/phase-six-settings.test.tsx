@@ -31,6 +31,25 @@ it('backs up in one click, or into a picked folder, and leaves automatic backup 
   expect(screen.getByText(/does not make backups automatically/i)).toBeInTheDocument()
 })
 
+it('asks for the Master Password and sends it when an app lock exists', async () => {
+  getTauriInvoke().mockImplementation((command: string) => Promise.resolve(
+    command === 'read_protection_state' ? { lockEnabled: true, encryptionEnabled: false } : {
+      path: 'C:/safe/Kivo Backup', createdAt: '2026-09-24', appVersion: '0.1', schemaVersion: 16,
+      itemCount: 0, fileCount: 0, valid: true, problems: [], encrypted: true,
+    }))
+  render(<BackupSettings />)
+  expect(await screen.findByText(/encrypted with your Master Password/)).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Back up now' }))
+  expect(await screen.findByText('Enter your Master Password to encrypt the backup.')).toBeInTheDocument()
+  expect(getTauriInvoke()).not.toHaveBeenCalledWith('create_backup_now', expect.anything())
+
+  fireEvent.change(screen.getByLabelText('Master Password'), { target: { value: 'secret' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Back up now' }))
+  await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('create_backup_now', { folder: null, password: 'secret' }))
+  expect(await screen.findByText(/Encrypted, made 2026-09-24/)).toBeInTheDocument()
+})
+
 it('warns that exports are not encrypted and never imports before a file is picked', async () => {
   getTauriInvoke().mockResolvedValue(null)
   render(<PortabilitySettings />)

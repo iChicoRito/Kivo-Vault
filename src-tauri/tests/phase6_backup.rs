@@ -104,6 +104,65 @@ fn round_trip_includes_credentials_and_files_and_saves_current_vault() {
 }
 
 #[test]
+fn sealed_backup_holds_no_plaintext_and_opens_only_with_its_password() {
+    let w = Workspace::new();
+    let db = w.path("app/kivo.db");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let files = w.path("app/files");
+    let conn = seed(&db, &files, "secret-title");
+    let parent = w.path("backups");
+    fs::create_dir_all(&parent).unwrap();
+
+    let info = backup::create_sealed_backup_in(&conn, &files, &parent, "master-pass").unwrap();
+    assert!(info.valid, "{:?}", info.problems);
+    assert!(info.encrypted);
+    let folder = PathBuf::from(&info.path);
+
+    // Nothing readable anywhere in the folder.
+    let mut stack = vec![folder.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let bytes = fs::read(&path).unwrap();
+            for plain in [&b"secret-title"[..], b"private-token", b"hello", b"original.txt", b"SQLite format"] {
+                assert!(
+                    !bytes.windows(plain.len()).any(|window| window == plain),
+                    "{} holds plaintext",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    assert_eq!(
+        backup::open_sealed_backup(&folder, "wrong-pass").unwrap_err(),
+        "That Master Password does not open this backup."
+    );
+    let opened = backup::open_sealed_backup(&folder, "master-pass").unwrap();
+    assert!(inspect_backup_at(&opened).valid);
+    drop(conn);
+
+    let live_db = w.path("live/kivo.db");
+    fs::create_dir_all(live_db.parent().unwrap()).unwrap();
+    let live_files = w.path("live/files");
+    drop(seed(&live_db, &live_files, "current"));
+    restore_backup_at(&opened, &live_db, &live_files).unwrap();
+    let _ = fs::remove_dir_all(&opened);
+    let restored = Connection::open(&live_db).unwrap();
+    assert_eq!(
+        restored
+            .query_row("SELECT title FROM items", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "secret-title"
+    );
+    assert_eq!(fs::read(live_files.join("abc.txt")).unwrap(), b"hello");
+}
+
+#[test]
 fn conflict_and_corruption_leave_live_vault_untouched() {
     let w = Workspace::new();
     let source_db = w.path("source/kivo.db");

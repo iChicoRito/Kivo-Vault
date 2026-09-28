@@ -13,12 +13,23 @@ mod vault;
 #[tauri::command]
 fn restore_backup(
     path: String,
+    password: Option<String>,
     state: tauri::State<'_, database::DatabaseState>,
     vault: tauri::State<'_, passwords::VaultKeyState>,
 ) -> Result<backup::RestoreSummary, String> {
     // The restored database has its own vault salt, so the old key must not stay loaded.
     vault.clear();
-    backup::restore_into(state.inner(), std::path::Path::new(&path))
+    state.check_attempt()?;
+    let result = backup::restore_with_password(
+        state.inner(),
+        std::path::Path::new(&path),
+        password.as_deref(),
+    );
+    let wrong = matches!(&result, Err(error) if error.starts_with("That Master Password"));
+    if wrong || result.is_ok() {
+        state.record_attempt(!wrong);
+    }
+    result
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

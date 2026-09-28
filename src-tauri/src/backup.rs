@@ -28,6 +28,8 @@ pub struct BackupInfo {
     pub file_count: i64,
     pub valid: bool,
     pub problems: Vec<String>,
+    /// Sealed with the Master Password. Counts stay hidden until restore.
+    pub encrypted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -387,8 +389,13 @@ pub fn inspect_backup_at(path: &Path) -> BackupInfo {
         file_count: 0,
         valid: false,
         problems: Vec::new(),
+        encrypted: false,
     };
-    let result = inspect(path, &mut info);
+    let result = if path.join(SEALED_HEADER).exists() {
+        inspect_sealed(path, &mut info)
+    } else {
+        inspect(path, &mut info)
+    };
     if let Err(error) = result {
         info.problems.push(error);
     }
@@ -645,6 +652,239 @@ pub(crate) fn restore_into(state: &DatabaseState, path: &Path) -> Result<Restore
     }
 }
 
+// Encrypted backups (format 2). The plain snapshot is built in the system temp
+// folder, then every file is sealed with a key from the Master Password and
+// written to the chosen folder, so that folder only ever holds ciphertext.
+
+const SEALED_FORMAT: i64 = 2;
+const SEALED_HEADER: &str = "backup.json";
+const SEALED_MANIFEST: &str = "manifest.enc";
+const SEALED_DATABASE: &str = "kivo.db.enc";
+const WRONG_BACKUP_PASSWORD: &str = "That Master Password does not open this backup.";
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SealedHeader {
+    format: i64,
+    app_version: String,
+    created_at: String,
+    salt: String,
+}
+
+fn sealed_aad(name: &str) -> Vec<u8> {
+    format!("kivo:backup:v1:{name}").into_bytes()
+}
+
+fn seal_file(key: &[u8; 32], source: &Path, target: &Path, name: &str) -> Result<(), String> {
+    // ponytail: whole-file read; stream in chunks if backups outgrow memory.
+    let bytes = fs::read(source).map_err(|e| e.to_string())?;
+    let sealed = crate::encryption::encrypt_bytes(key, &bytes, &sealed_aad(name))?;
+    fs::write(target, sealed).map_err(|e| e.to_string())
+}
+
+fn open_file(key: &[u8; 32], source: &Path, target: &Path, name: &str) -> Result<(), String> {
+    let bytes = fs::read(source).map_err(|e| e.to_string())?;
+    let plain = crate::encryption::decrypt_bytes(key, &bytes, &sealed_aad(name))
+        .map_err(|_| WRONG_BACKUP_PASSWORD.to_string())?;
+    fs::write(target, plain).map_err(|e| e.to_string())
+}
+
+fn temp_stage(label: &str) -> Result<PathBuf, String> {
+    unique_sibling(&std::env::temp_dir().join("kivo-backup"), label)
+}
+
+fn inspect_sealed(path: &Path, info: &mut BackupInfo) -> Result<(), String> {
+    info.encrypted = true;
+    directory(path)?;
+    regular(&path.join(SEALED_HEADER))?;
+    let header: SealedHeader = serde_json::from_reader(
+        File::open(path.join(SEALED_HEADER)).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("Invalid backup header: {e}"))?;
+    info.created_at = header.created_at;
+    info.app_version = header.app_version;
+    if header.format != SEALED_FORMAT {
+        info.problems.push("Unsupported backup format".into());
+    }
+    regular(&path.join(SEALED_MANIFEST))?;
+    regular(&path.join(SEALED_DATABASE))?;
+    directory(&path.join("files"))?;
+    for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+        let name = entry
+            .map_err(|e| e.to_string())?
+            .file_name()
+            .into_string()
+            .map_err(|_| "Non-Unicode backup entry")?;
+        if !matches!(
+            name.as_str(),
+            SEALED_HEADER | SEALED_MANIFEST | SEALED_DATABASE | "files"
+        ) {
+            info.problems
+                .push(format!("Unexpected backup entry: {name}"));
+        }
+    }
+    Ok(())
+}
+
+/// Writes an encrypted backup into a new dated folder inside `parent`.
+pub fn create_sealed_backup_in(
+    connection: &Connection,
+    files_dir: &Path,
+    parent: &Path,
+    password: &str,
+) -> Result<BackupInfo, String> {
+    let app_dir = files_dir
+        .parent()
+        .ok_or("Managed files have no app directory")?;
+    let stamp: String = connection
+        .query_row("SELECT strftime('%Y-%m-%d %H-%M-%S', 'now', 'localtime')", [], |row| {
+            row.get(0)
+        })
+        .map_err(|e| e.to_string())?;
+    let base = format!("Kivo Backup {stamp}");
+    let mut destination = parent.join(&base);
+    let mut copy = 2;
+    while destination.exists() {
+        destination = parent.join(format!("{base} ({copy})"));
+        copy += 1;
+    }
+    check_destination(&destination, app_dir)?;
+    directory(parent)?;
+
+    let plain = temp_stage("plain")?;
+    let partial = unique_sibling(&destination, "partial");
+    let result = (|| {
+        let partial = partial.clone()?;
+        write_backup(connection, files_dir, &plain)?;
+        let checked = inspect_backup_at(&plain);
+        if !checked.valid {
+            return Err(checked.problems.join("; "));
+        }
+
+        let mut salt = [0u8; 16];
+        getrandom::getrandom(&mut salt).map_err(|_| "Could not protect the backup")?;
+        let mut key = crate::encryption::derive_key(password, &salt)?;
+        let sealed = (|| {
+            seal_file(&key, &plain.join("manifest.json"), &partial.join(SEALED_MANIFEST), SEALED_MANIFEST)?;
+            seal_file(&key, &plain.join(DATABASE), &partial.join(SEALED_DATABASE), SEALED_DATABASE)?;
+            fs::create_dir(partial.join("files")).map_err(|e| e.to_string())?;
+            for entry in fs::read_dir(plain.join("files")).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let name = entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| "Non-Unicode managed file name")?;
+                seal_file(&key, &entry.path(), &partial.join("files").join(&name), &format!("files/{name}"))?;
+            }
+            Ok::<(), String>(())
+        })();
+        key.fill(0);
+        sealed?;
+
+        let header = SealedHeader {
+            format: SEALED_FORMAT,
+            app_version: env!("CARGO_PKG_VERSION").into(),
+            created_at: checked.created_at,
+            salt: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, salt),
+        };
+        let mut output = File::create(partial.join(SEALED_HEADER)).map_err(|e| e.to_string())?;
+        serde_json::to_writer_pretty(&mut output, &header).map_err(|e| e.to_string())?;
+        output.flush().map_err(|e| e.to_string())?;
+        drop(output);
+        fs::rename(&partial, &destination).map_err(|e| e.to_string())?;
+        Ok(inspect_backup_at(&destination))
+    })();
+    let _ = fs::remove_dir_all(&plain);
+    if let Ok(partial) = partial {
+        if partial.exists() {
+            let _ = fs::remove_dir_all(&partial);
+        }
+    }
+    result
+}
+
+/// Decrypts a sealed backup into a new temp folder in the plain layout, so the
+/// normal checks and restore run on it unchanged. The caller deletes the folder.
+pub fn open_sealed_backup(path: &Path, password: &str) -> Result<PathBuf, String> {
+    let info = inspect_backup_at(path);
+    if !info.valid {
+        return Err(format!("Backup invalid: {}", info.problems.join("; ")));
+    }
+    let header: SealedHeader = serde_json::from_reader(
+        File::open(path.join(SEALED_HEADER)).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("Invalid backup header: {e}"))?;
+    let salt = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &header.salt)
+        .map_err(|_| "Invalid backup header")?;
+    let mut key = crate::encryption::derive_key(password, &salt)?;
+    let target = temp_stage("open")?;
+    let opened = (|| {
+        open_file(&key, &path.join(SEALED_MANIFEST), &target.join("manifest.json"), SEALED_MANIFEST)?;
+        open_file(&key, &path.join(SEALED_DATABASE), &target.join(DATABASE), SEALED_DATABASE)?;
+        fs::create_dir(target.join("files")).map_err(|e| e.to_string())?;
+        for entry in fs::read_dir(path.join("files")).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "Non-Unicode managed file name")?;
+            if !plain_name(&name) {
+                return Err("Unsafe managed file name".into());
+            }
+            open_file(&key, &entry.path(), &target.join("files").join(&name), &format!("files/{name}"))?;
+        }
+        Ok::<(), String>(())
+    })();
+    key.fill(0);
+    if let Err(error) = opened {
+        let _ = fs::remove_dir_all(&target);
+        return Err(error);
+    }
+    Ok(target)
+}
+
+/// Restores a plain or sealed backup. A sealed one needs the Master Password
+/// it was made with; its decrypted copy is always deleted afterwards.
+pub(crate) fn restore_with_password(
+    state: &DatabaseState,
+    path: &Path,
+    password: Option<&str>,
+) -> Result<RestoreSummary, String> {
+    if !path.join(SEALED_HEADER).exists() {
+        return restore_into(state, path);
+    }
+    let password = password.ok_or("Enter the Master Password this backup was made with.")?;
+    let opened = open_sealed_backup(path, password)?;
+    let result = restore_into(state, &opened);
+    let _ = fs::remove_dir_all(&opened);
+    result
+}
+
+/// Makes a backup: sealed with the Master Password when an app lock exists,
+/// plain otherwise. A wrong password counts toward the wrong-try wait.
+fn backup_for_lock(
+    state: &DatabaseState,
+    parent: &Path,
+    password: Option<&str>,
+) -> Result<BackupInfo, String> {
+    let guard = state.require_connection()?;
+    let connection = guard.as_ref().expect("checked above");
+    let verifier = crate::database::read_password_verifier(connection)
+        .map_err(|e| e.to_string())?
+        .filter(|_| crate::database::has_stored_password_lock(connection).unwrap_or(false));
+    let Some(verifier) = verifier else {
+        return create_backup_in(connection, state.files_dir(), parent);
+    };
+    let password = password.ok_or("Enter your Master Password to encrypt the backup.")?;
+    state.check_attempt()?;
+    let matched = crate::security::secret_matches(password, &verifier);
+    state.record_attempt(matched);
+    if !matched {
+        return Err("Incorrect Master Password".into());
+    }
+    create_sealed_backup_in(connection, state.files_dir(), parent, password)
+}
+
 #[tauri::command]
 pub fn pick_backup_destination(app: AppHandle) -> Result<Option<String>, String> {
     Ok(app
@@ -671,6 +911,10 @@ pub fn create_backup(
 ) -> Result<BackupInfo, String> {
     let guard = state.require_connection()?;
     let connection = guard.as_ref().expect("checked above");
+    // This path writes a plain backup, so it is closed once an app lock exists.
+    if crate::database::has_stored_password_lock(connection).map_err(|e| e.to_string())? {
+        return Err("Use Back up now to make an encrypted backup".into());
+    }
     create_backup_at(
         connection,
         state.files_dir(),
@@ -683,6 +927,7 @@ pub fn create_backup(
 #[tauri::command]
 pub fn create_backup_now(
     folder: Option<String>,
+    password: Option<String>,
     app: AppHandle,
     state: State<'_, DatabaseState>,
 ) -> Result<BackupInfo, String> {
@@ -696,9 +941,7 @@ pub fn create_backup_now(
             .map_err(|e| format!("Could not find the Documents folder: {e}"))?
             .join("Kivo Backups"),
     };
-    let guard = state.require_connection()?;
-    let connection = guard.as_ref().expect("checked above");
-    create_backup_in(connection, state.files_dir(), &parent)
+    backup_for_lock(state.inner(), &parent, password.as_deref())
 }
 
 #[tauri::command]

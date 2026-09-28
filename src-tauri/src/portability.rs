@@ -460,6 +460,22 @@ fn fresh_stored_name(connection: &Connection, original_name: &str) -> Result<Str
     Ok(name)
 }
 
+/// Imports are read into memory whole, so a size cap keeps a huge or hostile
+/// file from exhausting it.
+const MAX_IMPORT_TEXT_BYTES: u64 = 50 * 1024 * 1024;
+const MAX_IMPORT_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+const TOO_LARGE: &str = "This file is too large to import";
+
+fn read_import_text(path: &Path) -> Result<String, String> {
+    let size = fs::metadata(path)
+        .map_err(|error| format!("Could not read the file: {error}"))?
+        .len();
+    if size > MAX_IMPORT_TEXT_BYTES {
+        return Err(TOO_LARGE.to_string());
+    }
+    fs::read_to_string(path).map_err(|error| format!("Could not read the file: {error}"))
+}
+
 fn read_import_bytes(root: &Path, file: &FileRecord) -> Result<Vec<u8>, &'static str> {
     if !plain_name(&file.stored_name) {
         return Err("Unsafe managed file name");
@@ -469,6 +485,7 @@ fn read_import_bytes(root: &Path, file: &FileRecord) -> Result<Vec<u8>, &'static
         Ok(metadata) if !metadata.file_type().is_file() => {
             Err("Managed file is not a regular file")
         }
+        Ok(metadata) if metadata.len() > MAX_IMPORT_FILE_BYTES => Err(TOO_LARGE),
         Ok(metadata) if metadata.len() != file.byte_size => {
             Err("Managed file size does not match JSON")
         }
@@ -526,8 +543,7 @@ pub(crate) fn import_json_into(
     keys: &ContentKeyState,
     path: &Path,
 ) -> Result<ImportReport, String> {
-    let input = fs::read_to_string(path)
-        .map_err(|error| format!("Could not read the import file: {error}"))?;
+    let input = read_import_text(path)?;
     let (document, mut report) = decode_json(&input)?;
     let root = export_parent(path);
     let directories_ok =
@@ -591,12 +607,12 @@ pub(crate) fn import_markdown_into(
         .map_err(|error| format!("Could not start the import: {error}"))?;
     let mut report = ImportReport::default();
     for path in paths {
-        let text = match fs::read_to_string(path) {
+        let text = match read_import_text(Path::new(path)) {
             Ok(text) => text,
             Err(error) => {
                 report.skipped.push(SkippedItem {
                     title: file_label(path),
-                    reason: format!("Could not read the file: {error}"),
+                    reason: error,
                 });
                 continue;
             }
@@ -632,7 +648,8 @@ pub(crate) fn import_markdown_into(
 }
 
 /// Items of `locked` collections are left out; the caller decides whether that
-/// is an error (one chosen item) or a count to report (whole vault).
+/// is an error (one chosen item) or a count to report (whole vault). A whole
+/// vault export also leaves out Trash.
 fn read_items(
     connection: &Connection,
     keys: &ContentKeyState,
@@ -648,7 +665,7 @@ fn read_items(
              FROM items i
              LEFT JOIN collections c ON c.id = i.collection_id
              LEFT JOIN files f ON f.item_id = i.id
-             WHERE (?1 IS NULL OR i.id = ?1){}
+             WHERE (i.id = ?1 OR (?1 IS NULL AND i.deleted_at IS NULL)){}
              ORDER BY i.created_at, i.id",
             crate::database::locked_filter_sql("i.collection_id", locked)
         ))
@@ -849,7 +866,7 @@ pub(crate) fn export_vault_into(
         connection
             .query_row(
                 &format!(
-                    "SELECT COUNT(*) FROM items WHERE collection_id IN ({})",
+                    "SELECT COUNT(*) FROM items WHERE deleted_at IS NULL AND collection_id IN ({})",
                     vec!["?"; locked.len()].join(",")
                 ),
                 rusqlite::params_from_iter(locked.iter()),

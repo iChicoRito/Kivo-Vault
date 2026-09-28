@@ -62,7 +62,7 @@ fn random_array<const N: usize>() -> Result<[u8; N], String> {
     Ok(value)
 }
 
-fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], String> {
+pub(crate) fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], String> {
     if salt.len() != SALT_LEN {
         return Err("Could not unlock protected data".to_string());
     }
@@ -688,15 +688,27 @@ pub fn unlock_content_vault(
 ) -> Result<bool, String> {
     let guard = state.require_connection()?;
     let connection = guard.as_ref().expect("checked above");
-    if !is_enabled(connection)? {
-        return verifier_matches(connection, &password);
-    }
-    match unlock(connection, &password)? {
-        Some(key) => {
-            state.content_key().store(key)?;
-            Ok(true)
+    state.check_attempt()?;
+    let matched = if !is_enabled(connection)? {
+        verifier_matches(connection, &password)?
+    } else {
+        match unlock(connection, &password)? {
+            Some(key) => {
+                state.content_key().store(key)?;
+                true
+            }
+            None => false,
         }
-        None => Ok(false),
+    };
+    state.record_attempt(matched);
+    Ok(matched)
+}
+
+/// Counts a wrong Master Password toward the wait; other errors do not.
+fn record_password_result<T>(state: &DatabaseState, result: &Result<T, String>) {
+    let wrong = matches!(result, Err(error) if error == "Incorrect Master Password");
+    if wrong || result.is_ok() {
+        state.record_attempt(!wrong);
     }
 }
 
@@ -714,7 +726,10 @@ pub fn enable_encryption(
 ) -> Result<ConversionSummary, String> {
     let mut guard = state.require_connection()?;
     let connection = guard.as_mut().expect("checked above");
-    let key = enable(connection, state.files_dir(), &password)?;
+    state.check_attempt()?;
+    let key = enable(connection, state.files_dir(), &password);
+    record_password_result(&state, &key);
+    let key = key?;
     state.content_key().store(key)?;
     let items: i64 = connection
         .query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0))
@@ -734,11 +749,14 @@ pub fn disable_encryption(
     state: State<'_, DatabaseState>,
 ) -> Result<ConversionSummary, String> {
     let mut guard = state.require_connection()?;
+    state.check_attempt()?;
     let result = disable(
         guard.as_mut().expect("checked above"),
         state.files_dir(),
         &password,
-    )?;
+    );
+    record_password_result(&state, &result);
+    let result = result?;
     state.content_key().clear()?;
     Ok(result)
 }
@@ -750,7 +768,10 @@ pub fn change_master_password(
     state: State<'_, DatabaseState>,
 ) -> Result<(), String> {
     let mut guard = state.require_connection()?;
-    change_password(guard.as_mut().expect("checked above"), &current, &next)
+    state.check_attempt()?;
+    let result = change_password(guard.as_mut().expect("checked above"), &current, &next);
+    record_password_result(&state, &result);
+    result
 }
 
 #[cfg(test)]

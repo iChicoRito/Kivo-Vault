@@ -21,6 +21,7 @@ export default function PortabilitySettings() {
     </div>
     <ul className="grid list-disc gap-1 pl-5 text-sm text-muted">
       <li>Exported files are not encrypted. Keep them somewhere private.</li>
+      <li>Items in Trash are not exported.</li>
       <li>Markdown keeps your text but not attached files, formatting, or exact dates.</li>
     </ul>
     <div className="flex flex-wrap gap-3">

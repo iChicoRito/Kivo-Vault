@@ -1534,6 +1534,11 @@ fn write_import(
     // encrypted.
     let write_result = match key {
         Some(key) => {
+            // Encryption reads the whole file into memory, so it has a ceiling.
+            // ponytail: whole-file read; stream in chunks if larger files matter.
+            if byte_size as u64 > MAX_ENCRYPTED_IMPORT_BYTES {
+                return Err("This file is too large to import while encryption is on".to_string());
+            }
             let bytes = fs::read(source)
                 .map_err(|error| format!("Could not read the source file: {error}"))?;
             let encrypted = encryption::encrypt_file(key, &id, &bytes)
@@ -2211,6 +2216,9 @@ fn is_web_url(url: &str) -> bool {
     url.starts_with("https://") || url.starts_with("http://")
 }
 
+/// Largest file that can be imported while encryption is on.
+const MAX_ENCRYPTED_IMPORT_BYTES: u64 = 1024 * 1024 * 1024;
+
 /// File types Windows runs as programs or scripts when opened.
 const RUNNABLE_EXTENSIONS: &[&str] = &[
     "exe", "com", "bat", "cmd", "msi", "msp", "msix", "appx", "appinstaller", "hta", "lnk",
@@ -2550,7 +2558,10 @@ pub fn verify_collection_secret(
     secret: String,
     state: State<'_, DatabaseState>,
 ) -> Result<bool, String> {
-    verify_collection_secret_with_state(state.inner(), &id, &secret)
+    state.check_attempt()?;
+    let matched = verify_collection_secret_with_state(state.inner(), &id, &secret)?;
+    state.record_attempt(matched);
+    Ok(matched)
 }
 
 #[tauri::command]

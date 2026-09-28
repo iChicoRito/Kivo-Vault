@@ -144,7 +144,7 @@ describe('UnlockPage', () => {
     invoke.mockReset()
     stubInvoke({
       load_password_verifier: () => VERIFIER,
-      verify_password: () => true,
+      unlock_content_vault: () => true,
       read_protection_state: () => ({ lockEnabled: true, encryptionEnabled: false }),
     })
   })
@@ -166,7 +166,7 @@ describe('UnlockPage', () => {
   it('rejects a wrong password with generic copy and stays on the page', async () => {
     stubInvoke({
       load_password_verifier: () => VERIFIER,
-      verify_password: () => false,
+      unlock_content_vault: () => false,
       read_protection_state: () => ({ lockEnabled: true, encryptionEnabled: false }),
     })
     const onUnlocked = vi.fn()
@@ -188,10 +188,22 @@ describe('UnlockPage', () => {
     submitFormOf(passwordInput())
 
     await waitFor(() => expect(onUnlocked).toHaveBeenCalledTimes(1))
-    expect(invoke).toHaveBeenCalledWith('verify_password', {
-      password: PASSWORD,
-      verifier: VERIFIER,
+    expect(invoke).toHaveBeenCalledWith('unlock_content_vault', { password: PASSWORD })
+  })
+
+  it('shows the wait message after too many wrong tries', async () => {
+    stubInvoke({
+      load_password_verifier: () => VERIFIER,
+      unlock_content_vault: () => {
+        throw new Error('Too many wrong tries. Wait 30 seconds.')
+      },
     })
+
+    render(<UnlockPage />)
+    typeInto(passwordInput(), PASSWORD)
+    submitFormOf(passwordInput())
+
+    expect(await screen.findByText('Too many wrong tries. Wait 30 seconds.')).toBeInTheDocument()
   })
 
   it('unlocks the app after the correct password verifies', async () => {
@@ -208,7 +220,7 @@ describe('UnlockPage', () => {
     const checking = deferred<boolean>()
     stubInvoke({
       load_password_verifier: () => VERIFIER,
-      verify_password: () => checking.promise,
+      unlock_content_vault: () => checking.promise,
       read_protection_state: () => ({ lockEnabled: true, encryptionEnabled: false }),
     })
 
@@ -228,7 +240,7 @@ describe('UnlockPage', () => {
   it('shows generic copy when the verifier check fails', async () => {
     stubInvoke({
       load_password_verifier: () => VERIFIER,
-      verify_password: () => {
+      unlock_content_vault: () => {
         throw new Error('ipc failed')
       },
       read_protection_state: () => ({ lockEnabled: true, encryptionEnabled: false }),

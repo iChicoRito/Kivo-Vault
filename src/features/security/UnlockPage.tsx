@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Button, FieldError, Input, Label, TextField, Typography } from '@heroui/react'
 
 import PageHeader from '../../app/PageHeader'
-import { readAppLockVerifier, verifyPassword } from '../../data/security'
-import { readProtectionState, unlockVault as unlockContentVault } from '../../data/protection'
+import { readAppLockVerifier } from '../../data/security'
+import { unlockVault as unlockContentVault } from '../../data/protection'
 
 export type UnlockPageProps = {
   onUnlocked?: () => void
@@ -40,10 +40,8 @@ export default function UnlockPage({ onUnlocked }: UnlockPageProps) {
         return
       }
 
-      const { encryptionEnabled } = await readProtectionState()
-      const matched = encryptionEnabled
-        ? await unlockContentVault(password)
-        : await verifyPassword(password, verifier)
+      // Rust checks the password either way, so wrong tries are counted and slowed.
+      const matched = await unlockContentVault(password)
 
       if (matched) {
         setPassword('')
@@ -51,8 +49,9 @@ export default function UnlockPage({ onUnlocked }: UnlockPageProps) {
       } else {
         setError(WRONG_PASSWORD_MESSAGE)
       }
-    } catch {
-      setError(CHECK_ERROR_MESSAGE)
+    } catch (reason) {
+      const text = String(reason)
+      setError(text.includes('Too many wrong tries') ? text.replace(/^Error:\s*/, '') : CHECK_ERROR_MESSAGE)
     } finally {
       busyRef.current = false
       setChecking(false)

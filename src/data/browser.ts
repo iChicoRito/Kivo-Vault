@@ -174,6 +174,9 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
       return hashPreviewPassword(String(args.password ?? '')) as unknown as T
     case 'verify_password':
       return (hashPreviewPassword(String(args.password ?? '')) === String(args.verifier ?? '')) as unknown as T
+    case 'unlock_content_vault':
+      return (!state.passwordVerifier ||
+        hashPreviewPassword(String(args.password ?? '')) === state.passwordVerifier) as unknown as T
     case 'load_password_verifier':
       return state.passwordVerifier as T
     case 'has_password_verifier':

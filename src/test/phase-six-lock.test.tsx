@@ -15,7 +15,7 @@ afterEach(() => vi.useRealTimers())
 it('manual lock hides content and clears both content and password manager keys', async () => {
   getTauriInvoke().mockImplementation((command: string) => Promise.resolve(
     command === 'read_protection_state' ? { lockEnabled: true, encryptionEnabled: false } :
-    command === 'load_password_verifier' ? 'hash' : command === 'verify_password' ? true : undefined,
+    command === 'load_password_verifier' ? 'hash' : command === 'unlock_content_vault' ? true : undefined,
   ))
   render(<LockProvider initialLocked={false} autoLockMinutes={0}><Probe /></LockProvider>)
   fireEvent.click(screen.getByRole('button', { name: 'Lock Kivo' }))
@@ -67,7 +67,7 @@ it('hides the routes behind the unlock page while locked, then reveals them afte
   getTauriInvoke().mockImplementation((command: string) => Promise.resolve(
     command === 'read_protection_state' ? { lockEnabled: true, encryptionEnabled: false } :
     command === 'load_password_verifier' ? '$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA' :
-    command === 'verify_password' ? true : undefined,
+    command === 'unlock_content_vault' ? true : undefined,
   ))
 
   render(

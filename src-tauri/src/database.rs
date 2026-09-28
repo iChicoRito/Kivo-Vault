@@ -111,6 +111,30 @@ pub struct DatabaseState {
     // Protected collections opened with their PIN or password this session.
     // Cleared whenever the app locks, so a lock closes them all again.
     unlocked_collections: Mutex<HashSet<String>>,
+    // Wrong tries across every password and PIN check. Memory only; a restart
+    // clears it, which still turns a quick guessing run into a slow one.
+    attempts: Mutex<Attempts>,
+}
+
+#[derive(Default)]
+struct Attempts {
+    failures: u32,
+    blocked_until: Option<std::time::Instant>,
+}
+
+/// Free tries before the first wait.
+const FREE_ATTEMPTS: u32 = 5;
+const FIRST_WAIT_SECONDS: u64 = 30;
+const MAX_WAIT_SECONDS: u64 = 300;
+
+/// Wait after `failures` wrong tries: none for the first five, then 30 s,
+/// doubling up to five minutes.
+fn attempt_wait(failures: u32) -> u64 {
+    if failures < FREE_ATTEMPTS {
+        return 0;
+    }
+    let doublings = (failures - FREE_ATTEMPTS).min(16);
+    (FIRST_WAIT_SECONDS << doublings).min(MAX_WAIT_SECONDS)
 }
 
 #[allow(dead_code)]
@@ -260,6 +284,40 @@ impl DatabaseState {
             files_dir,
             content_key: crate::encryption::ContentKeyState::default(),
             unlocked_collections: Mutex::new(HashSet::new()),
+            attempts: Mutex::new(Attempts::default()),
+        }
+    }
+
+    /// Refuses a password or PIN check while a wait from earlier wrong tries
+    /// is still running.
+    pub(crate) fn check_attempt(&self) -> Result<(), String> {
+        let attempts = self
+            .attempts
+            .lock()
+            .map_err(|_| "Could not check the password".to_string())?;
+        if let Some(until) = attempts.blocked_until {
+            let now = std::time::Instant::now();
+            if until > now {
+                let seconds = (until - now).as_secs() + 1;
+                return Err(format!("Too many wrong tries. Wait {seconds} seconds."));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn record_attempt(&self, ok: bool) {
+        let Ok(mut attempts) = self.attempts.lock() else {
+            return;
+        };
+        if ok {
+            *attempts = Attempts::default();
+            return;
+        }
+        attempts.failures += 1;
+        let wait = attempt_wait(attempts.failures);
+        if wait > 0 {
+            attempts.blocked_until =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(wait));
         }
     }
 
@@ -841,6 +899,27 @@ mod tests {
 
     const VERIFIER: &str =
         "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAA";
+
+    #[test]
+    fn wrong_tries_wait_longer_each_time_and_success_resets() {
+        assert_eq!(
+            (1..=9).map(attempt_wait).collect::<Vec<_>>(),
+            vec![0, 0, 0, 0, 30, 60, 120, 240, 300]
+        );
+        assert_eq!(attempt_wait(40), 300);
+
+        let state = DatabaseState::new(PathBuf::from("unused.db"), PathBuf::from("unused"));
+        for _ in 0..4 {
+            state.record_attempt(false);
+            assert!(state.check_attempt().is_ok());
+        }
+        state.record_attempt(false);
+        let error = state.check_attempt().expect_err("fifth miss waits");
+        assert!(error.starts_with("Too many wrong tries. Wait "), "{error}");
+
+        state.record_attempt(true);
+        assert!(state.check_attempt().is_ok());
+    }
 
     struct TempWorkspace {
         root: PathBuf,

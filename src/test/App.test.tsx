@@ -297,7 +297,7 @@ describe('App root', () => {
     boot.initializeDatabase.mockResolvedValue({})
     boot.loadBootState.mockResolvedValue('locked')
     boot.readAppLockVerifier.mockResolvedValue(VERIFIER)
-    boot.verifyPassword.mockResolvedValue(true)
+    protectionData.unlockVault.mockResolvedValue(true)
 
     render(<App />)
 
@@ -308,14 +308,14 @@ describe('App root', () => {
     fireEvent.submit(passwordField.closest('form')!)
 
     expect(await screen.findByRole('navigation', { name: 'Primary navigation' })).toBeInTheDocument()
-    expect(boot.verifyPassword).toHaveBeenCalledWith('hunter two', VERIFIER)
+    expect(protectionData.unlockVault).toHaveBeenCalledWith('hunter two')
   })
 
   it('keeps the unlock page when the password is rejected', async () => {
     boot.initializeDatabase.mockResolvedValue({})
     boot.loadBootState.mockResolvedValue('locked')
     boot.readAppLockVerifier.mockResolvedValue(VERIFIER)
-    boot.verifyPassword.mockResolvedValue(false)
+    protectionData.unlockVault.mockResolvedValue(false)
 
     render(<App />)
 

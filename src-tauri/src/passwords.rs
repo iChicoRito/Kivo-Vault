@@ -921,7 +921,10 @@ pub fn unlock_vault(
     db: State<'_, DatabaseState>,
     vault: State<'_, VaultKeyState>,
 ) -> Result<VaultStatus, String> {
-    unlock_vault_with_state(db.inner(), vault.inner(), &master_password)
+    db.check_attempt()?;
+    let result = unlock_vault_with_state(db.inner(), vault.inner(), &master_password);
+    record_secret_result(&db, &result, UNLOCK_ERROR);
+    result
 }
 
 #[tauri::command]
@@ -1058,8 +1061,20 @@ pub fn reset_requires_password(db: State<'_, DatabaseState>) -> Result<bool, Str
 /// gets past the first screen. The reset itself checks it again.
 #[tauri::command]
 pub fn verify_reset_password(password: String, db: State<'_, DatabaseState>) -> Result<(), String> {
+    db.check_attempt()?;
     let connection = db.require_connection()?;
-    check_reset_password(connection.as_ref().expect("checked above"), Some(&password)).map(|_| ())
+    let result =
+        check_reset_password(connection.as_ref().expect("checked above"), Some(&password));
+    record_secret_result(&db, &result, RESET_PASSWORD_ERROR);
+    result.map(|_| ())
+}
+
+/// Counts only a wrong secret toward the wait; other errors do not.
+fn record_secret_result<T>(db: &DatabaseState, result: &Result<T, String>, wrong_message: &str) {
+    let wrong = matches!(result, Err(error) if error == wrong_message);
+    if wrong || result.is_ok() {
+        db.record_attempt(!wrong);
+    }
 }
 
 // Wipes every note, source, file, password, and setting. The password vault key
@@ -1070,7 +1085,10 @@ pub fn reset_vault(
     db: State<'_, DatabaseState>,
     keys: State<'_, VaultKeyState>,
 ) -> Result<(), String> {
-    reset_with_state(db.inner(), keys.inner(), password.as_deref())
+    db.check_attempt()?;
+    let result = reset_with_state(db.inner(), keys.inner(), password.as_deref());
+    record_secret_result(&db, &result, RESET_PASSWORD_ERROR);
+    result
 }
 
 const CLIPBOARD_CLEAR_AFTER: std::time::Duration = std::time::Duration::from_secs(30);

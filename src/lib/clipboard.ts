@@ -1,9 +1,9 @@
 import { invoke, isTauriRuntime } from '../data/runtime'
 
 /**
- * Copies a password. In the desktop app the Rust side writes it, keeps it out
- * of Windows clipboard history, and clears it after 30 seconds if it is still
- * there. The browser demo has no backend for that, so it copies plainly.
+ * Copies a password. In the desktop app the Rust side writes it, so copy works
+ * even while Kivo is unfocused. The browser demo has no backend, so it uses
+ * the webview clipboard.
  */
 export async function copySecret(text: string): Promise<void> {
   if (isTauriRuntime()) return invoke<void>('copy_secret', { text })

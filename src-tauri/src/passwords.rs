@@ -1091,42 +1091,14 @@ pub fn reset_vault(
     result
 }
 
-const CLIPBOARD_CLEAR_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// Copies a password and clears it after 30 seconds, but only if the clipboard
-/// still holds it, so anything the user copied since is kept. Done in Rust
-/// because the webview cannot write the clipboard while Kivo is unfocused.
+/// Copies a password like normal text, so it stays on the clipboard and shows
+/// in Win+V. Done in Rust because the webview cannot write the clipboard while
+/// Kivo is unfocused.
 #[tauri::command]
 pub fn copy_secret(text: String) -> Result<(), String> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|_| "Could not copy to the clipboard".to_string())?;
-
-    #[cfg(windows)]
-    let written = {
-        use arboard::SetExtWindows;
-        // Keeps the password out of Win+V history and cloud clipboard sync.
-        clipboard
-            .set()
-            .exclude_from_history()
-            .exclude_from_cloud()
-            .text(text.as_str())
-    };
-    #[cfg(not(windows))]
-    let written = clipboard.set_text(text.as_str());
-
-    written.map_err(|_| "Could not copy to the clipboard".to_string())?;
-
-    std::thread::spawn(move || {
-        std::thread::sleep(CLIPBOARD_CLEAR_AFTER);
-
-        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-            if clipboard.get_text().is_ok_and(|current| current == text) {
-                let _ = clipboard.clear();
-            }
-        }
-    });
-
-    Ok(())
+    arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set_text(text))
+        .map_err(|_| "Could not copy to the clipboard".to_string())
 }
 
 #[cfg(test)]

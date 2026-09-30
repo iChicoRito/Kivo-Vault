@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Button, Modal } from '@heroui/react'
+import { EyeIcon } from '@hugeicons/core-free-icons'
 import { openItemFile, readItemFile, revealItemFile, type ItemFilePreview } from '../../data/files'
 import { notifyError } from '../../lib/feedback'
+import { DialogHeader } from '../../components/DialogHeader'
 
 export function FilePreviewDialog({ itemId, onClose }: { itemId: string | null; onClose: () => void }) {
   const [preview, setPreview] = useState<ItemFilePreview | null>(null)
@@ -33,7 +35,7 @@ export function FilePreviewDialog({ itemId, onClose }: { itemId: string | null; 
   return (
     <Modal isOpen={itemId !== null} onOpenChange={(open) => { if (!open) onClose() }}>
       <Modal.Backdrop><Modal.Container size="lg"><Modal.Dialog>
-        <Modal.Header><Modal.Heading>File preview</Modal.Heading></Modal.Header>
+        <DialogHeader icon={EyeIcon} title="File preview" description="A read-only look at this file." />
         <Modal.Body className="grid gap-4">
           {!preview && !error ? <p role="status">Loading file preview...</p> : null}
           {error ? <p role="alert">Preview could not load. Open the file externally or try again.</p> : null}

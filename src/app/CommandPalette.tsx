@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Button, Kbd, Modal } from '@heroui/react'
+import { CommandIcon } from '@hugeicons/core-free-icons'
 import { useNavigate } from 'react-router-dom'
 import { listItems, setItemsFavorite, trashItems, type ItemSummary } from '../data/items'
 import { ItemDetailsDialog } from '../features/items/ItemDetailsDialog'
@@ -7,6 +8,7 @@ import { ConfirmDialog } from '../components/items/dialogs'
 import { notifyError } from '../lib/feedback'
 import { navigationGroups } from './navigation'
 import { shortcuts } from './shortcuts'
+import { DialogHeader } from '../components/DialogHeader'
 
 type PaletteProps = { open: boolean; onClose: () => void; onQuickAdd: (action?: 'file' | 'source' | 'collection') => void; onShortcuts: () => void }
 
@@ -56,7 +58,7 @@ export function CommandPalette({ open, onClose, onQuickAdd, onShortcuts }: Palet
   function choose(index: number) { const result = matches[index]; if (!result) return; onClose(); result.run() }
   return <>
     <Modal isOpen={open} onOpenChange={(next) => { if (!next) onClose() }}><Modal.Backdrop><Modal.Container size="lg"><Modal.Dialog>
-      <Modal.Header><Modal.Heading>Command palette</Modal.Heading></Modal.Header>
+      <DialogHeader icon={CommandIcon} title="Command palette" description="Jump to a page, run a command or open an item." />
       <Modal.Body className="grid gap-3"><label className="sr-only" htmlFor="kivo-command-query">Command or item</label><input autoFocus id="kivo-command-query" className="w-full rounded-lg bg-default p-3 text-foreground focus-visible:outline-2 focus-visible:outline-focus" placeholder="Search commands, pages, items" value={query} onChange={(event) => { setQuery(event.target.value); setActive(0) }} onKeyDown={(event) => {
         if (event.key === 'ArrowDown') { event.preventDefault(); setActive((value) => Math.min(value + 1, matches.length - 1)) }
         if (event.key === 'ArrowUp') { event.preventDefault(); setActive((value) => Math.max(value - 1, 0)) }

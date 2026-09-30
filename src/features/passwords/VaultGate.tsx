@@ -257,7 +257,10 @@ function UnlockVaultDialog() {
           <Modal.Container>
             <Modal.Dialog className="max-w-2xl">
               <Modal.Body className="grid gap-6 p-8">
-                <div className="grid gap-2 text-center">
+                <div className="grid justify-items-center gap-2 text-center">
+                  <Modal.Icon aria-hidden="true" className="bg-accent/10 text-accent">
+                    <HugeiconsIcon icon={SquareLock01Icon} size={20} />
+                  </Modal.Icon>
                   <Modal.Heading className="text-2xl">Unlock passwords</Modal.Heading>
                   <Typography color="muted" type="body">
                     Enter your master password to open the vault.

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { HugeiconsIcon } from '@hugeicons/react'
-import { LibraryIcon } from '@hugeicons/core-free-icons'
+import { FolderTransferIcon, LibraryIcon } from '@hugeicons/core-free-icons'
 import {
   Alert,
   Button,
@@ -33,6 +33,7 @@ import { useVaultChanged } from '../../lib/useVaultChanged'
 import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { QuickAddMenu } from '../quick-add/QuickAddMenu'
 import { ItemDetailsDialog } from './ItemDetailsDialog'
+import { DialogHeader } from '../../components/DialogHeader'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -327,9 +328,11 @@ export function ItemsPage() {
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header>
-                <Modal.Heading>Move to collection</Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                description="Pick where this item should live."
+                icon={FolderTransferIcon}
+                title="Move to collection"
+              />
               <Modal.Body>
                 <CollectionSelect
                   label="Collection"

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Button, Card, Input, Label, TextField, Typography } from '@heroui/react'
+import { SquareUnlock01Icon } from '@hugeicons/core-free-icons'
 import { ConfirmDialog } from '../../components/items/dialogs'
 import { disableEncryption, enableEncryption, readProtectionState, type ProtectionState } from '../../data/protection'
 import { notifyError, notifySuccess } from '../../lib/feedback'
@@ -42,6 +43,6 @@ export default function EncryptionSettings() {
     {state?.lockEnabled ? <TextField className="max-w-md" type="password" value={password} onChange={setPassword}><Label>Master Password</Label><Input fullWidth autoComplete="current-password" variant="secondary" /></TextField> : null}
     {error ? <Typography role="alert" type="body-sm" className="text-danger">{error}</Typography> : null}
     <Button className="justify-self-start" isDisabled={!state?.lockEnabled || busy || !password} variant={state?.encryptionEnabled ? 'secondary' : 'primary'} onPress={() => state?.encryptionEnabled ? setConfirm(true) : void change()}>{busy ? 'Updating...' : state?.encryptionEnabled ? 'Turn off encryption' : 'Turn on encryption'}</Button>
-    <ConfirmDialog open={confirm} title="Turn off encryption?" description="Your notes and files will be saved unscrambled on this device again. Make a backup first." confirmLabel="Turn off encryption" tone="danger" onCancel={() => setConfirm(false)} onConfirm={() => void change()} />
+    <ConfirmDialog icon={SquareUnlock01Icon} open={confirm} title="Turn off encryption?" description="Your notes and files will be saved unscrambled on this device again. Make a backup first." confirmLabel="Turn off encryption" tone="danger" onCancel={() => setConfirm(false)} onConfirm={() => void change()} />
   </Card.Content></Card>
 }

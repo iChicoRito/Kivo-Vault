@@ -9,6 +9,7 @@ import {
   TextField,
   Typography,
 } from '@heroui/react'
+import { FolderAddIcon, PlusSignIcon } from '@hugeicons/core-free-icons'
 import { useNavigate } from 'react-router-dom'
 
 import { saveCollection } from '../../data/collections'
@@ -17,6 +18,7 @@ import { pickFile } from '../../data/files'
 import { notifyError, notifySuccess } from '../../lib/feedback'
 import SaveSourceDialog from '../sources/SaveSourceDialog'
 import { QuickAddTiles, type QuickAddAction } from './QuickAddTiles'
+import { DialogHeader } from '../../components/DialogHeader'
 
 type QuickAddDialogProps = {
   open: boolean
@@ -139,16 +141,15 @@ export function QuickAddDialog({
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header className="grid gap-0.5">
-                <Modal.Heading className="text-base font-semibold">
-                  {mode === 'collection' ? 'New collection' : 'Quick add'}
-                </Modal.Heading>
-                <p className="m-0 text-sm text-muted">
-                  {mode === 'collection'
+              <DialogHeader
+                description={
+                  mode === 'collection'
                     ? 'Name a collection to group related items.'
-                    : 'Add something to your vault.'}
-                </p>
-              </Modal.Header>
+                    : 'Add something to your vault.'
+                }
+                icon={mode === 'collection' ? FolderAddIcon : PlusSignIcon}
+                title={mode === 'collection' ? 'New collection' : 'Quick add'}
+              />
               <Modal.Body className="grid gap-4">
                 {error ? (
                   <Typography className="font-semibold text-danger" role="alert" type="body">

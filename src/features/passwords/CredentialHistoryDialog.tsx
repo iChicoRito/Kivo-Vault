@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Button, Modal, Typography } from '@heroui/react'
+import { HistoryIcon } from '@hugeicons/core-free-icons'
 
 import { ConfirmDialog } from '../../components/items/dialogs'
 import {
@@ -9,6 +10,7 @@ import {
 } from '../../data/passwords'
 import { copySecret } from '../../lib/clipboard'
 import { notifyError, notifySuccess } from '../../lib/feedback'
+import { DialogHeader } from '../../components/DialogHeader'
 
 export type CredentialHistoryDialogProps = {
   /** The credential whose history is shown; null keeps the dialog closed. */
@@ -92,9 +94,11 @@ export function CredentialHistoryDialog({
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header>
-                <Modal.Heading>History: {service}</Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                description="Earlier details of this login, newest first."
+                icon={HistoryIcon}
+                title={`History: ${service}`}
+              />
               <Modal.Body className="grid gap-3">
                 {!versions && !error ? <p role="status">Loading history...</p> : null}
                 {error ? (
@@ -154,6 +158,7 @@ export function CredentialHistoryDialog({
       </Modal>
 
       <ConfirmDialog
+        icon={HistoryIcon}
         confirmLabel="Restore version"
         description="Your current details are saved to history first, so you can switch back."
         open={selected !== null}

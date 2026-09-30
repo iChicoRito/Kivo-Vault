@@ -9,9 +9,11 @@ import {
   TextField,
   Typography,
 } from '@heroui/react'
+import { Link01Icon } from '@hugeicons/core-free-icons'
 
 import { notifyError, notifySuccess } from '../../lib/feedback'
 import { loadItem, saveItem, type VaultItem } from '../../data/items'
+import { DialogHeader } from '../../components/DialogHeader'
 
 const ADDRESS_REQUIRED = 'Address is required.'
 const ADDRESS_INVALID = 'Address must start with http:// or https://.'
@@ -132,9 +134,11 @@ export function SaveSourceDialog({ open, onClose, itemId, onSaved }: SaveSourceD
       <Modal.Backdrop>
         <Modal.Container>
           <Modal.Dialog>
-            <Modal.Header>
-              <Modal.Heading>{itemId ? 'Edit source' : 'New source'}</Modal.Heading>
-            </Modal.Header>
+            <DialogHeader
+              description="Save a link with a title and a short note."
+              icon={Link01Icon}
+              title={itemId ? 'Edit source' : 'New source'}
+            />
 
             <Modal.Body className="grid gap-4">
               {loading ? (

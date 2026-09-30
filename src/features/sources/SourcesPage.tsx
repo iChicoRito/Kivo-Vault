@@ -13,6 +13,7 @@ import {
 import {
   Delete02Icon,
   FolderOpenIcon,
+  FolderTransferIcon,
   Link02Icon,
   NoteEditIcon,
   PlusSignIcon,
@@ -33,6 +34,7 @@ import { moduleRoutes } from '../modules/ModulePage'
 import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { startItemDrag } from '../collections/itemDrag'
 import { SaveSourceDialog } from './SaveSourceDialog'
+import { DialogHeader } from '../../components/DialogHeader'
 
 const sourcesModule = moduleRoutes.find((route) => route.path === 'sources')
 
@@ -361,9 +363,11 @@ export function SourcesPage() {
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header>
-                <Modal.Heading>Move source to collection</Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                description="Pick where this source should live."
+                icon={FolderTransferIcon}
+                title="Move source to collection"
+              />
               <Modal.Body className="grid gap-3">
                 <CollectionSelect
                   label="Collection"

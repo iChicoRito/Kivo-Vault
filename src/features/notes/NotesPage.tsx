@@ -15,6 +15,7 @@ import {
 import {
   Delete02Icon,
   FolderOpenIcon,
+  FolderTransferIcon,
   GridViewIcon,
   LeftToRightListBulletIcon,
   Note01Icon,
@@ -50,6 +51,7 @@ import { NOTE_STATUS_BAR_CLASS, NOTE_STATUS_CHIP_COLOR, noteStatus } from './not
 import { moduleRoutes } from '../modules/ModulePage'
 import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { startItemDrag } from '../collections/itemDrag'
+import { DialogHeader } from '../../components/DialogHeader'
 
 const notesModule = moduleRoutes.find((route) => route.path === 'notes')
 
@@ -498,9 +500,11 @@ export function NotesPage() {
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header>
-                <Modal.Heading>Move note to collection</Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                description="Pick where this note should live."
+                icon={FolderTransferIcon}
+                title="Move note to collection"
+              />
               <Modal.Body className="grid gap-3">
                 <CollectionSelect
                   label="Collection"

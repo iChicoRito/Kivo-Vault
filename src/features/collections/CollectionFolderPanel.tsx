@@ -12,6 +12,7 @@ import {
   EyeIcon,
   FolderOpenIcon,
   FolderRemoveIcon,
+  FolderTransferIcon,
   Layers01Icon,
   SidebarLeftIcon,
   StarIcon,
@@ -39,6 +40,7 @@ import {
   type ItemDragOverDetail,
   type ItemDropDetail,
 } from './itemDrag'
+import { DialogHeader } from '../../components/DialogHeader'
 
 const ICON_COMPONENTS: Record<string, IconSvgElement> = {
   folder: FolderOpenIcon,
@@ -678,9 +680,11 @@ export function CollectionFolderPanel() {
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header>
-                <Modal.Heading>Move item to collection</Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                description="Pick where this item should live."
+                icon={FolderTransferIcon}
+                title="Move item to collection"
+              />
               <Modal.Body>
                 <CollectionSelect
                   label="Collection"

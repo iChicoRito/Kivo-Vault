@@ -8,7 +8,7 @@ import {
   Select,
   Typography,
 } from '@heroui/react'
-import { StarIcon } from '@hugeicons/core-free-icons'
+import { FolderTransferIcon, StarIcon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 
 import PageHeader from '../../app/PageHeader'
@@ -27,6 +27,7 @@ import { notifyError, notifySuccess, trashManyWithUndo } from '../../lib/feedbac
 import { useVaultChanged } from '../../lib/useVaultChanged'
 import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { ItemDetailsDialog } from '../items/ItemDetailsDialog'
+import { DialogHeader } from '../../components/DialogHeader'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -252,9 +253,11 @@ export function FavoritesPage() {
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header>
-                <Modal.Heading>Move to collection</Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                description="Pick where this item should live."
+                icon={FolderTransferIcon}
+                title="Move to collection"
+              />
               <Modal.Body>
                 <CollectionSelect
                   label="Collection"

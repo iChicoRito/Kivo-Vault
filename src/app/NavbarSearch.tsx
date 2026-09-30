@@ -21,6 +21,7 @@ import { listCollections, type Collection } from '../data/collections'
 import { FilterMenu, type KindFilter } from '../components/items/FilterMenu'
 import { usePreferences } from '../app/preferences'
 import { ItemDetailsDialog } from '../features/items/ItemDetailsDialog'
+import { DialogHeader } from '../components/DialogHeader'
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -200,12 +201,11 @@ export function NavbarSearch() {
         <Modal.Backdrop variant="blur">
           <Modal.Container placement="center" size="lg">
             <Modal.Dialog>
-              <Modal.Header className="gap-1">
-                <Modal.Heading>Search the vault</Modal.Heading>
-                <Typography color="muted" type="body-xs">
-                  Find notes, sources, and files by title, tag, or collection.
-                </Typography>
-              </Modal.Header>
+              <DialogHeader
+                description="Find notes, sources, and files by title, tag, or collection."
+                icon={Search01Icon}
+                title="Search the vault"
+              />
 
               <Modal.Body className="grid gap-3">
                 <TextField className="w-full" value={query} onChange={setQuery}>

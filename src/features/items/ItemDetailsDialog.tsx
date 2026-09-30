@@ -13,7 +13,12 @@ import {
   TextField,
   Typography,
 } from '@heroui/react'
-import { ArrowDown01Icon, Delete02Icon, FileExportIcon } from '@hugeicons/core-free-icons'
+import {
+  ArrowDown01Icon,
+  Delete02Icon,
+  FileExportIcon,
+  InformationCircleIcon,
+} from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 
 import {
@@ -35,6 +40,7 @@ import { FilePreviewDialog } from '../preview/FilePreviewDialog'
 import { matchesShortcut } from '../../app/shortcuts'
 import { indexFile, listIndexState, type IndexState } from '../../data/indexing'
 import { exportItemsJson, pickSaveFile } from '../../data/portability'
+import { DialogHeader } from '../../components/DialogHeader'
 
 type ItemDetailsDialogProps = {
   itemId: string | null
@@ -278,9 +284,11 @@ export function ItemDetailsDialog({ itemId, onClose, onChanged }: ItemDetailsDia
       <Modal.Backdrop>
         <Modal.Container>
           <Modal.Dialog className="max-w-3xl">
-            <Modal.Header>
-              <Modal.Heading>Item details</Modal.Heading>
-            </Modal.Header>
+            <DialogHeader
+              description="Everything Kivo knows about this item."
+              icon={InformationCircleIcon}
+              title="Item details"
+            />
 
             <Modal.Body>
               {loadState === 'loading' ? (

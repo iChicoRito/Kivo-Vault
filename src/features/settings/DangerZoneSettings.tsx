@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { Button, Card, Input, Label, Modal, TextField, Typography } from '@heroui/react'
+import { Alert02Icon, SquareLock01Icon } from '@hugeicons/core-free-icons'
 
 import { resetRequiresPassword, resetVault, verifyResetPassword } from '../../data/setup'
+import { DialogHeader } from '../../components/DialogHeader'
 
 /** The word the person types to confirm, so a stray click can never wipe the vault. */
 const CONFIRM_WORD = 'DELETE'
@@ -116,11 +118,11 @@ export default function DangerZoneSettings() {
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header>
-                <Modal.Heading>
-                  {step === 'password' ? 'Enter your password' : 'Delete all data?'}
-                </Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                icon={step === 'password' ? SquareLock01Icon : Alert02Icon}
+                title={step === 'password' ? 'Enter your password' : 'Delete all data?'}
+                tone={step === 'password' ? 'default' : 'danger'}
+              />
               <Modal.Body className="grid gap-3">
                 {step === 'password' ? (
                   <>

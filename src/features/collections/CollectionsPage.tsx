@@ -21,11 +21,15 @@ import {
 } from '@heroui/react'
 import {
   ArrowLeft01Icon,
+  CheckmarkSquare02Icon,
   Delete02Icon,
   Download01Icon,
   EyeIcon,
+  FolderAddIcon,
+  FolderEditIcon,
   FolderMinusIcon,
   FolderOpenIcon,
+  FolderTransferIcon,
   GridViewIcon,
   Layers01Icon,
   LeftToRightListBulletIcon,
@@ -34,9 +38,9 @@ import {
   Note01Icon,
   NoteEditIcon,
   PlusSignIcon,
+  SquareUnlock01Icon,
   StarIcon,
   Tag01Icon,
-  CheckmarkSquare02Icon,
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -73,6 +77,7 @@ import { CollectionItemView } from './CollectionItemView'
 import { openItemByKind } from './itemOpen'
 import { startItemDrag } from './itemDrag'
 import { UnlockDialog } from './UnlockDialog'
+import { DialogHeader } from '../../components/DialogHeader'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -1292,11 +1297,12 @@ export function CollectionsPage() {
           <Modal.Container>
             <Modal.Dialog>
               <Modal.CloseTrigger className="size-8 rounded-full" />
-              <Modal.Header>
-                <Modal.Heading className="pr-8 text-xl font-semibold">
-                  {edit?.id ? 'Edit Collection' : 'New Collection'}
-                </Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                description="Group related notes, sources and files in one place."
+                icon={edit?.id ? FolderEditIcon : FolderAddIcon}
+                title={edit?.id ? 'Edit Collection' : 'New Collection'}
+                titleClassName="pr-8"
+              />
               <Modal.Body className="grid gap-6">
                 <TextField
                   isInvalid={editError === NAME_REQUIRED_ERROR}
@@ -1468,17 +1474,13 @@ export function CollectionsPage() {
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header>
-                <Modal.Heading>
-                  Remove {removeLockTarget?.protection === 'pin' ? 'PIN' : 'password'}?
-                </Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                description={`${removeLockTarget?.name ?? 'This collection'} will open without a ${removeLockTarget?.protection === 'pin' ? 'PIN' : 'password'}. Enter the current one to confirm.`}
+                icon={SquareUnlock01Icon}
+                title={`Remove ${removeLockTarget?.protection === 'pin' ? 'PIN' : 'password'}?`}
+                tone="warning"
+              />
               <Modal.Body className="grid gap-3">
-                <Typography type="body">
-                  {removeLockTarget?.name} will open without a{' '}
-                  {removeLockTarget?.protection === 'pin' ? 'PIN' : 'password'}. Enter the current one to
-                  confirm.
-                </Typography>
                 {removeLockTarget?.protection === 'pin' ? (
                   <div className="grid gap-2">
                     <Label>Current PIN</Label>
@@ -1540,9 +1542,11 @@ export function CollectionsPage() {
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header>
-                <Modal.Heading>Move item to collection</Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                description="Pick where this item should live."
+                icon={FolderTransferIcon}
+                title="Move item to collection"
+              />
               <Modal.Body className="grid gap-3">
                 <CollectionSelect
                   label="Collection"

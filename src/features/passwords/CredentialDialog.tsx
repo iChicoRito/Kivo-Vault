@@ -14,7 +14,7 @@ import {
   TextField,
   Typography,
 } from '@heroui/react'
-import { DiceIcon, EyeIcon, ViewOffIcon } from '@hugeicons/core-free-icons'
+import { DiceIcon, EyeIcon, Key01Icon, ViewOffIcon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 
 import {
@@ -24,6 +24,7 @@ import {
   type CredentialInput,
 } from '../../data/passwords'
 import { PasswordGeneratorPanel } from './PasswordGeneratorPanel'
+import { DialogHeader } from '../../components/DialogHeader'
 
 export type CredentialDialogProps = {
   open: boolean
@@ -133,9 +134,11 @@ export function CredentialDialog({ open, credential, onClose, onSaved }: Credent
       <Modal.Backdrop>
         <Modal.Container>
           <Modal.Dialog className="max-w-2xl">
-            <Modal.Header>
-              <Modal.Heading>{credential ? 'Edit password' : 'Add password'}</Modal.Heading>
-            </Modal.Header>
+            <DialogHeader
+              description={credential ? 'Changes are saved to this login. The old details stay in its History.' : 'Save a login. It is encrypted on this device.'}
+              icon={Key01Icon}
+              title={credential ? 'Edit password' : 'Add password'}
+            />
 
             <Modal.Body>
               <form className="grid gap-4" noValidate onSubmit={(event) => void handleSave(event)}>

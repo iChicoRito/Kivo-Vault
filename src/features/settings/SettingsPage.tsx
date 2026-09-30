@@ -19,6 +19,7 @@ import {
   Typography,
   useOverlayState,
 } from '@heroui/react'
+import { PaintBoardIcon } from '@hugeicons/core-free-icons'
 import { getName, getVersion } from '@tauri-apps/api/app'
 import {
   disable as disableAutostart,
@@ -48,6 +49,7 @@ import BackupSettings from '../backup/BackupSettings'
 import DangerZoneSettings from './DangerZoneSettings'
 import PortabilitySettings from '../portability/PortabilitySettings'
 import { ShortcutsDialog } from '../shortcuts/ShortcutsDialog'
+import { DialogHeader } from '../../components/DialogHeader'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -826,14 +828,13 @@ export default function SettingsPage() {
                 <Modal.Backdrop>
                   <Modal.Container>
                     <Modal.Dialog>
-                      <Modal.Header>
-                        <Modal.Heading>Reset appearance?</Modal.Heading>
-                      </Modal.Header>
+                      <DialogHeader
+                        description="Theme, spacing, menu style, and page layouts go back to how they started. Your profile, password, and data stay the same."
+                        icon={PaintBoardIcon}
+                        title="Reset appearance?"
+                        tone="warning"
+                      />
                       <Modal.Body>
-                        <Typography type="body">
-                          Theme, spacing, menu style, and page layouts go back to how they started.
-                          Your profile, password, and data stay the same.
-                        </Typography>
                         {resetError ? (
                           <Typography
                             className="font-semibold text-danger"

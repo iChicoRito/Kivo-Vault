@@ -13,6 +13,10 @@ import {
   Typography,
 } from '@heroui/react'
 
+import { Delete02Icon, InformationCircleIcon } from '@hugeicons/core-free-icons'
+import type { IconSvgElement } from '@hugeicons/react'
+
+import { DialogHeader } from '../DialogHeader'
 import { listCollections, type Collection } from '../../data/collections'
 import { listTags, type Tag } from '../../data/tags'
 import { TagSuggestions } from './TagSuggestions'
@@ -23,6 +27,8 @@ type ConfirmDialogProps = {
   description?: string
   confirmLabel: string
   tone?: 'danger' | 'default'
+  /** Defaults to a bin for danger and an info mark otherwise. */
+  icon?: IconSvgElement
   onConfirm: () => void
   onCancel: () => void
 }
@@ -33,6 +39,7 @@ export function ConfirmDialog({
   description,
   confirmLabel,
   tone = 'default',
+  icon,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -46,14 +53,12 @@ export function ConfirmDialog({
       <Modal.Backdrop>
         <Modal.Container>
           <Modal.Dialog>
-            <Modal.Header>
-              <Modal.Heading>{title}</Modal.Heading>
-            </Modal.Header>
-            {description ? (
-              <Modal.Body>
-                <Typography type="body">{description}</Typography>
-              </Modal.Body>
-            ) : null}
+            <DialogHeader
+              description={description}
+              icon={icon ?? (tone === 'danger' ? Delete02Icon : InformationCircleIcon)}
+              title={title}
+              tone={tone}
+            />
             <Modal.Footer>
               <Button variant="secondary" onPress={onCancel}>
                 Cancel

@@ -17,7 +17,9 @@ import {
   EyeIcon,
   FileAddIcon,
   FolderOpenIcon,
+  FolderTransferIcon,
   NoteEditIcon,
+  PencilEdit02Icon,
   PlusSignIcon,
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
@@ -43,6 +45,7 @@ import { notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '..
 import { useVaultChanged } from '../../lib/useVaultChanged'
 import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { startItemDrag } from '../collections/itemDrag'
+import { DialogHeader } from '../../components/DialogHeader'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -421,9 +424,11 @@ export function FilesPage() {
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header>
-                <Modal.Heading>Rename file</Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                description="Only the name in Kivo changes. The file itself stays the same."
+                icon={PencilEdit02Icon}
+                title="Rename file"
+              />
               <Modal.Body>
                 <TextField
                   isInvalid={renameError !== null}
@@ -457,9 +462,11 @@ export function FilesPage() {
         <Modal.Backdrop>
           <Modal.Container>
             <Modal.Dialog>
-              <Modal.Header>
-                <Modal.Heading>Move file to collection</Modal.Heading>
-              </Modal.Header>
+              <DialogHeader
+                description="Pick where this file should live."
+                icon={FolderTransferIcon}
+                title="Move file to collection"
+              />
               <Modal.Body>
                 <CollectionSelect
                   label="Collection"

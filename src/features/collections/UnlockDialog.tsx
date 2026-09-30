@@ -10,8 +10,10 @@ import {
   TextField,
   Typography,
 } from '@heroui/react'
+import { SquareLock01Icon } from '@hugeicons/core-free-icons'
 
 import { type Collection, verifyCollectionSecret } from '../../data/collections'
+import { DialogHeader } from '../../components/DialogHeader'
 
 export type UnlockDialogProps = {
   collection: Collection | null
@@ -122,9 +124,11 @@ export function UnlockDialog({ collection, onCancel, onUnlocked }: UnlockDialogP
       <Modal.Backdrop>
         <Modal.Container>
           <Modal.Dialog>
-            <Modal.Header>
-              <Modal.Heading>{`Open "${collection.name}"`}</Modal.Heading>
-            </Modal.Header>
+            <DialogHeader
+              description={`This collection is locked. Enter its ${isPin ? 'PIN' : 'password'} to open it.`}
+              icon={SquareLock01Icon}
+              title={`Open "${collection.name}"`}
+            />
 
             <Modal.Body className="grid gap-4">
               <form className="grid gap-4" noValidate onSubmit={(event) => void submit(event)}>

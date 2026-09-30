@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Button, Modal, Typography } from '@heroui/react'
+import { Stethoscope02Icon } from '@hugeicons/core-free-icons'
 
 import {
   checkVaultHealth,
@@ -8,6 +9,7 @@ import {
   type HealthProblemKind,
   type HealthReport,
 } from '../../data/backup'
+import { DialogHeader } from '../../components/DialogHeader'
 import { notifyError, notifySuccess } from '../../lib/feedback'
 
 type Group = {
@@ -100,9 +102,11 @@ export function VaultHealthDialog({ open, onClose }: VaultHealthDialogProps) {
       <Modal.Backdrop>
         <Modal.Container>
           <Modal.Dialog>
-            <Modal.Header>
-              <Modal.Heading>Vault health</Modal.Heading>
-            </Modal.Header>
+            <DialogHeader
+              description="Kivo checks the database, your files and your encrypted records."
+              icon={Stethoscope02Icon}
+              title="Vault health"
+            />
             <Modal.Body className="grid gap-3">
               {!report && !error ? <p role="status">Checking your vault...</p> : null}
               {error ? (

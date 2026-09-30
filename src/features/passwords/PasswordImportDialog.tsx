@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Alert, Button, Checkbox, Chip, Modal, Typography } from '@heroui/react'
+import { FileImportIcon } from '@hugeicons/core-free-icons'
 
 import {
   importCredentials,
@@ -8,6 +9,7 @@ import {
   type ImportPreview,
   type ImportResult,
 } from '../../data/passwords'
+import { DialogHeader } from '../../components/DialogHeader'
 
 export type PasswordImportDialogProps = {
   open: boolean
@@ -111,9 +113,11 @@ export function PasswordImportDialog({ open, onClose, onImported }: PasswordImpo
       <Modal.Backdrop>
         <Modal.Container size="lg">
           <Modal.Dialog>
-            <Modal.Header>
-              <Modal.Heading>Import passwords</Modal.Heading>
-            </Modal.Header>
+            <DialogHeader
+              description="Bring in logins from Chrome or Edge."
+              icon={FileImportIcon}
+              title="Import passwords"
+            />
 
             <Modal.Body className="grid gap-4">
               {step === 'pick' ? (

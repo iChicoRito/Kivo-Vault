@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { Button, Input, Label, Modal, TextField, Typography } from '@heroui/react'
+import { DatabaseRestoreIcon } from '@hugeicons/core-free-icons'
 import { restoreBackup, type BackupInfo } from '../../data/backup'
 import { useLock } from '../../app/lock'
+import { DialogHeader } from '../../components/DialogHeader'
 
 export default function RestoreDialog({ backup, onClose }: { backup: BackupInfo | null; onClose: () => void }) {
   const [busy, setBusy] = useState(false)
@@ -33,9 +35,8 @@ export default function RestoreDialog({ backup, onClose }: { backup: BackupInfo 
     } finally { setBusy(false) }
   }
   return <Modal isOpen={backup !== null} onOpenChange={(open) => { if (!open && !busy) close() }}><Modal.Backdrop><Modal.Container><Modal.Dialog>
-    <Modal.Header><Modal.Heading>Replace my vault?</Modal.Heading></Modal.Header>
+    <DialogHeader icon={DatabaseRestoreIcon} tone="warning" title="Replace my vault?" description="This replaces your current database and managed files, not merges them. A safety copy is made first. You will need the restored vault’s Master Password." />
     <Modal.Body className="grid gap-3">
-      <Typography type="body">This replaces your current database and managed files, not merges them. A safety copy is made first. You will need the restored vault’s Master Password.</Typography>
       {backup ? <Typography type="body">Backup: {backup.createdAt}, {backup.encrypted ? 'encrypted' : `${backup.itemCount} items, ${backup.fileCount} files`}. {backup.path}</Typography> : null}
       {needsPassword ? <TextField type="password" value={password} onChange={setPassword}>
         <Label>Master Password this backup was made with</Label>

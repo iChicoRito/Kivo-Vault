@@ -14,6 +14,7 @@ import {
 import {
   ArrowLeft01Icon,
   Delete02Icon,
+  FileImportIcon,
   PlusSignIcon,
   Shield01Icon,
   SquareLock01Icon,
@@ -39,6 +40,7 @@ import { notifyError, notifySuccess } from '../../lib/feedback'
 import { useVaultChanged } from '../../lib/useVaultChanged'
 import { CredentialDialog } from './CredentialDialog'
 import { CredentialRow } from './CredentialRow'
+import { PasswordImportDialog } from './PasswordImportDialog'
 import { PasswordGeneratorPanel } from './PasswordGeneratorPanel'
 import { VaultGate } from './VaultGate'
 
@@ -93,6 +95,7 @@ function PasswordsPageContent() {
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Credential | null>(null)
+  const [importOpen, setImportOpen] = useState(false)
   const [locking, setLocking] = useState(false)
 
   useVaultChanged(() => setAttempt((value) => value + 1))
@@ -202,6 +205,10 @@ function PasswordsPageContent() {
             <HugeiconsIcon aria-hidden="true" icon={SquareLock01Icon} size={18} />
             {locking ? 'Locking...' : 'Lock Vault'}
           </Button>
+          <Button variant="secondary" onPress={() => setImportOpen(true)}>
+            <HugeiconsIcon aria-hidden="true" icon={FileImportIcon} size={18} />
+            Import
+          </Button>
           <Button onPress={openCreate}>
             <HugeiconsIcon aria-hidden="true" icon={PlusSignIcon} size={18} />
             New Password
@@ -305,6 +312,12 @@ function PasswordsPageContent() {
           setEditing(null)
         }}
         onSaved={() => setAttempt((value) => value + 1)}
+      />
+
+      <PasswordImportDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={() => setAttempt((value) => value + 1)}
       />
 
       <ConfirmDialog

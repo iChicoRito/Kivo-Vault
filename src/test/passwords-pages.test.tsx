@@ -386,6 +386,39 @@ describe('PasswordsPage row actions', () => {
     )
   })
 
+  it('imports a password export after review, leaving already saved logins unticked', async () => {
+    stub('list_credentials', () => [summary()])
+    stub('pick_password_csv', () => 'C:/export.csv')
+    stub('preview_password_import', () => ({
+      rows: [
+        { service: 'github.com', url: 'https://github.com', username: 'ada@example.com', password: 'new', notes: '', duplicateOf: 'cred-1' },
+        { service: 'Forum', url: 'https://forum.example', username: 'ada', password: 'forum-pass', notes: '', duplicateOf: null },
+      ],
+      skipped: 1,
+    }))
+    stub('import_credentials', () => ({ imported: 1, replaced: 0, failed: [] }))
+
+    renderPasswords()
+    await screen.findByText('GitHub')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Import passwords' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Choose file...' }))
+
+    expect(await within(dialog).findByText(/2 logins found, 1 already saved/)).toBeInTheDocument()
+    expect(within(dialog).getByText('Already saved')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Import 1 login' }))
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('import_credentials', {
+        choices: [
+          { service: 'Forum', url: 'https://forum.example', username: 'ada', password: 'forum-pass', notes: '', replaceId: null },
+        ],
+      }),
+    )
+    expect(await within(dialog).findByText('Delete the exported file now')).toBeInTheDocument()
+  })
+
   it('copies the username from the row menu', async () => {
     stub('list_credentials', () => [summary()])
 

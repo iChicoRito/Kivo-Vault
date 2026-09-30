@@ -134,6 +134,9 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
     case 'read_item_file':
     case 'restore_item_version':
     case 'restore_credential_version':
+    case 'pick_password_csv':
+    case 'preview_password_import':
+    case 'import_credentials':
     case 'index_file':
       throw new Error('This action needs the Kivo desktop app.')
     case 'initialize_database':

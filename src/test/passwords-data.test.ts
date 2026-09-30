@@ -4,7 +4,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   deleteCredentialsPermanently,
+  importCredentials,
   listCredentialVersions,
+  previewPasswordImport,
   restoreCredentialVersion,
   listCredentials,
   loadCredential,
@@ -206,6 +208,25 @@ describe('credential history', () => {
     expect(getTauriInvoke()).toHaveBeenCalledWith('restore_credential_version', {
       versionId: 'version-1',
     })
+    expect(notifyVaultChanged).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('password import', () => {
+  it('previews a file with preview_password_import and { path }', async () => {
+    getTauriInvoke().mockResolvedValue({ rows: [], skipped: 0 })
+
+    await expect(previewPasswordImport('C:/export.csv')).resolves.toEqual({ rows: [], skipped: 0 })
+    expect(getTauriInvoke()).toHaveBeenCalledWith('preview_password_import', { path: 'C:/export.csv' })
+  })
+
+  it('imports choices with import_credentials and tells the app', async () => {
+    const result = { imported: 1, replaced: 0, failed: [] }
+    const choice = { service: 'Forum', url: '', username: 'ada', password: 'p', notes: '', replaceId: null }
+    getTauriInvoke().mockResolvedValue(result)
+
+    await expect(importCredentials([choice])).resolves.toEqual(result)
+    expect(getTauriInvoke()).toHaveBeenCalledWith('import_credentials', { choices: [choice] })
     expect(notifyVaultChanged).toHaveBeenCalledTimes(1)
   })
 })

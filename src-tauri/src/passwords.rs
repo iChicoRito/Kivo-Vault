@@ -7,7 +7,8 @@ use aes_gcm::{
 use argon2::Argon2;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::database::DatabaseState;
 
@@ -138,6 +139,56 @@ pub struct CredentialVersion {
     pub url: String,
     pub password: String,
 }
+
+/// One login read from a password export, shown before anything is saved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRow {
+    pub service: String,
+    pub url: String,
+    pub username: String,
+    pub password: String,
+    pub notes: String,
+    /// The saved credential this login matches, if any.
+    pub duplicate_of: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPreview {
+    pub rows: Vec<ImportRow>,
+    /// Lines left out because they had no password.
+    pub skipped: usize,
+}
+
+/// A login the person chose to import. With `replace_id`, only the password
+/// of that saved credential changes; the old one moves to its history.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportChoice {
+    pub service: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub replace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportResult {
+    pub imported: usize,
+    pub replaced: usize,
+    pub failed: Vec<String>,
+}
+
+/// The same size limit as other imports.
+const MAX_IMPORT_CSV_BYTES: u64 = 50 * 1024 * 1024;
+const NOT_A_PASSWORD_EXPORT: &str = "This file is not a Chrome or Edge password export";
 
 /// How many earlier versions each credential keeps, the same as note history.
 const CREDENTIAL_VERSION_LIMIT: i64 = 20;
@@ -292,6 +343,193 @@ fn read_credential_versions(
             })
         })
         .collect()
+}
+
+/// Splits CSV text into records: quoted fields, doubled quotes inside them,
+/// line breaks inside quotes, a leading byte-order mark, and CRLF or LF lines.
+fn parse_csv(text: &str) -> Vec<Vec<String>> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut records = Vec::new();
+    let mut record = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if quoted {
+            match c {
+                '"' if chars.peek() == Some(&'"') => {
+                    field.push('"');
+                    chars.next();
+                }
+                '"' => quoted = false,
+                _ => field.push(c),
+            }
+            continue;
+        }
+        match c {
+            '"' => quoted = true,
+            ',' => record.push(std::mem::take(&mut field)),
+            '\r' => {}
+            '\n' => {
+                record.push(std::mem::take(&mut field));
+                records.push(std::mem::take(&mut record));
+            }
+            _ => field.push(c),
+        }
+    }
+    if !field.is_empty() || !record.is_empty() {
+        record.push(field);
+        records.push(record);
+    }
+    records.retain(|record| record.iter().any(|field| !field.trim().is_empty()));
+    records
+}
+
+/// The website part of a URL, lowercased and without `www.`, so
+/// `https://www.GitHub.com/login` and `github.com` match.
+fn url_host(url: &str) -> String {
+    let url = url.trim();
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+    let host = host.split(':').next().unwrap_or("");
+    let host = host.to_lowercase();
+    host.strip_prefix("www.").map(str::to_string).unwrap_or(host)
+}
+
+/// Reads a Chrome or Edge export (`name,url,username,password,note`).
+/// Columns are found by header name, so their order does not matter.
+fn read_password_csv(text: &str) -> Result<(Vec<ImportRow>, usize), String> {
+    let mut records = parse_csv(text).into_iter();
+    let header: Vec<String> = records
+        .next()
+        .ok_or(NOT_A_PASSWORD_EXPORT)?
+        .iter()
+        .map(|name| name.trim().to_lowercase())
+        .collect();
+    let column = |name: &str| header.iter().position(|field| field == name);
+    let password_column = column("password").ok_or(NOT_A_PASSWORD_EXPORT)?;
+    let (name, url, username, note) = (column("name"), column("url"), column("username"), column("note"));
+    let cell = |record: &[String], index: Option<usize>| {
+        index
+            .and_then(|index| record.get(index))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default()
+    };
+
+    let mut rows = Vec::new();
+    let mut skipped = 0;
+    for record in records {
+        let password = record.get(password_column).cloned().unwrap_or_default();
+        if password.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let url = cell(&record, url);
+        let service = match cell(&record, name) {
+            name if !name.is_empty() => name,
+            _ if !url_host(&url).is_empty() => url_host(&url),
+            _ => url.clone(),
+        };
+        if service.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        rows.push(ImportRow {
+            service,
+            url,
+            username: cell(&record, username),
+            password,
+            notes: record
+                .get(note.unwrap_or(usize::MAX))
+                .cloned()
+                .unwrap_or_default(),
+            duplicate_of: None,
+        });
+    }
+    Ok((rows, skipped))
+}
+
+/// A login matches a saved credential with the same username on the same
+/// website. Without a website on either side, the service name decides.
+fn same_login(row: &ImportRow, saved: &Credential) -> bool {
+    if !row.username.eq_ignore_ascii_case(saved.username.trim()) {
+        return false;
+    }
+    let (row_host, saved_host) = (url_host(&row.url), url_host(&saved.url));
+    if !row_host.is_empty() && !saved_host.is_empty() {
+        return row_host == saved_host;
+    }
+    row.service.trim().eq_ignore_ascii_case(saved.service.trim())
+}
+
+fn preview_password_import_in(
+    connection: &Connection,
+    key: &[u8; KEY_LENGTH],
+    text: &str,
+) -> Result<ImportPreview, String> {
+    let (mut rows, skipped) = read_password_csv(text)?;
+    let saved = read_credentials(connection, key, "deleted_at IS NULL", &[])?;
+    for row in &mut rows {
+        row.duplicate_of = saved
+            .iter()
+            .find(|credential| same_login(row, credential))
+            .map(|credential| credential.id.clone());
+    }
+    Ok(ImportPreview { rows, skipped })
+}
+
+/// Saves each chosen login on its own, so one bad line does not stop the rest.
+fn import_credentials_in(
+    connection: &mut Connection,
+    key: &[u8; KEY_LENGTH],
+    choices: &[ImportChoice],
+) -> ImportResult {
+    let mut result = ImportResult::default();
+    for choice in choices {
+        let saved = match &choice.replace_id {
+            Some(id) => read_credential(connection, key, id).and_then(|saved| {
+                let saved = saved.ok_or_else(|| "Credential was not found".to_string())?;
+                write_credential(
+                    connection,
+                    key,
+                    &CredentialInput {
+                        id: Some(saved.id),
+                        service: saved.service,
+                        username: saved.username,
+                        password: choice.password.clone(),
+                        url: saved.url,
+                        category: saved.category,
+                        tags: saved.tags,
+                        notes: saved.notes,
+                        is_favorite: saved.is_favorite,
+                    },
+                )
+            }),
+            None => write_credential(
+                connection,
+                key,
+                &CredentialInput {
+                    id: None,
+                    service: choice.service.clone(),
+                    username: choice.username.clone(),
+                    password: choice.password.clone(),
+                    url: choice.url.clone(),
+                    category: String::new(),
+                    tags: Vec::new(),
+                    notes: choice.notes.clone(),
+                    is_favorite: false,
+                },
+            ),
+        };
+        match (saved, &choice.replace_id) {
+            (Ok(_), Some(_)) => result.replaced += 1,
+            (Ok(_), None) => result.imported += 1,
+            (Err(_), _) => result.failed.push(choice.service.clone()),
+        }
+    }
+    result
 }
 
 /// Puts a saved version back. The details it replaces are kept as a version
@@ -1151,6 +1389,48 @@ pub fn restore_credential_version(
 }
 
 #[tauri::command]
+pub fn pick_password_csv(app: AppHandle) -> Result<Option<String>, String> {
+    Ok(app
+        .dialog()
+        .file()
+        .add_filter("Password export (CSV)", &["csv"])
+        .blocking_pick_file()
+        .map(|path| path.to_string()))
+}
+
+#[tauri::command]
+pub fn preview_password_import(
+    path: String,
+    db: State<'_, DatabaseState>,
+    vault: State<'_, VaultKeyState>,
+) -> Result<ImportPreview, String> {
+    let key = vault.require_key()?;
+    let size = std::fs::metadata(&path)
+        .map_err(|error| format!("Could not read the file: {error}"))?
+        .len();
+    if size > MAX_IMPORT_CSV_BYTES {
+        return Err("This file is too large to import".to_string());
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("Could not read the file: {error}"))?;
+    let connection = db.require_connection()?;
+
+    preview_password_import_in(connection.as_ref().expect("checked above"), &key, &text)
+}
+
+#[tauri::command]
+pub fn import_credentials(
+    choices: Vec<ImportChoice>,
+    db: State<'_, DatabaseState>,
+    vault: State<'_, VaultKeyState>,
+) -> Result<ImportResult, String> {
+    let key = vault.require_key()?;
+    let mut connection = db.require_connection()?;
+
+    Ok(import_credentials_in(connection.as_mut().expect("checked above"), &key, &choices))
+}
+
+#[tauri::command]
 pub fn set_credentials_favorite(
     ids: Vec<String>,
     favorite: bool,
@@ -1929,6 +2209,93 @@ mod tests {
         assert_eq!(history.len(), 20);
         assert_eq!(history[0].password, "pass-24");
         assert_eq!(history[19].password, "pass-5");
+    }
+
+    #[test]
+    fn csv_reader_handles_quotes_line_breaks_and_a_byte_order_mark() {
+        let text = "\u{feff}name,url,username,password,note\r\n\
+                    \"Bank, Main\",https://bank.example/login,ada,\"pa\"\"ss\",\"line one\nline two\"\r\n\
+                    \r\n";
+        let records = parse_csv(text);
+        assert_eq!(records.len(), 2, "blank lines are dropped");
+        assert_eq!(
+            records[1],
+            vec!["Bank, Main", "https://bank.example/login", "ada", "pa\"ss", "line one\nline two"]
+        );
+    }
+
+    #[test]
+    fn password_export_columns_are_found_by_name_and_empty_passwords_are_skipped() {
+        let text = "url,password,username,name\n\
+                    https://www.GitHub.com/login,one,ada,\n\
+                    https://forum.example,,bob,Forum\n";
+        let (rows, skipped) = read_password_csv(text).expect("read export");
+        assert_eq!(skipped, 1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].service, "github.com", "an empty name falls back to the website");
+        assert_eq!(rows[0].username, "ada");
+        assert_eq!(rows[0].password, "one");
+
+        assert_eq!(
+            read_password_csv("name,url,username\nBank,,ada\n").unwrap_err(),
+            NOT_A_PASSWORD_EXPORT
+        );
+        assert_eq!(read_password_csv("").unwrap_err(), NOT_A_PASSWORD_EXPORT);
+    }
+
+    #[test]
+    fn url_host_ignores_scheme_www_port_path_and_case() {
+        assert_eq!(url_host("https://www.GitHub.com:443/login?x=1"), "github.com");
+        assert_eq!(url_host("github.com"), "github.com");
+        assert_eq!(url_host("android://hash@com.example.app/"), "com.example.app");
+        assert_eq!(url_host(""), "");
+    }
+
+    #[test]
+    fn import_marks_duplicates_and_replace_keeps_the_old_password_in_history() {
+        let (_workspace, db, vault) = unlocked_vault();
+        let mut input = credential_input("GitHub", "old-pass");
+        input.username = "ada".to_string();
+        input.url = "https://github.com".to_string();
+        input.category = "Development".to_string();
+        let saved = save_credential_with_state(&db, &vault, &input).expect("save");
+
+        let text = "name,url,username,password,note\n\
+                    github.com,https://www.github.com/session,ADA,new-pass,\n\
+                    Forum,https://forum.example,ada,forum-pass,hi\n";
+        let key = vault.require_key().expect("vault is unlocked");
+        let preview = {
+            let connection = db.require_connection().expect("lock connection");
+            preview_password_import_in(connection.as_ref().expect("connection is initialized"), &key, text)
+                .expect("preview")
+        };
+        assert_eq!(preview.rows[0].duplicate_of.as_deref(), Some(saved.id.as_str()));
+        assert_eq!(preview.rows[1].duplicate_of, None);
+
+        let choices: Vec<ImportChoice> = preview
+            .rows
+            .iter()
+            .map(|row| ImportChoice {
+                service: row.service.clone(),
+                url: row.url.clone(),
+                username: row.username.clone(),
+                password: row.password.clone(),
+                notes: row.notes.clone(),
+                replace_id: row.duplicate_of.clone(),
+            })
+            .collect();
+        let result = {
+            let mut connection = db.require_connection().expect("lock connection");
+            import_credentials_in(connection.as_mut().expect("connection is initialized"), &key, &choices)
+        };
+        assert_eq!(result, ImportResult { imported: 1, replaced: 1, failed: Vec::new() });
+
+        let updated = load_credential_with_state(&db, &vault, &saved.id).expect("load");
+        assert_eq!(updated.password, "new-pass");
+        assert_eq!(updated.category, "Development", "replace only changes the password");
+        let history = versions(&db, &vault, &saved.id);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].password, "old-pass");
     }
 
     #[test]

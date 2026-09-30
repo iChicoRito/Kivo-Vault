@@ -102,6 +102,37 @@ export async function restoreCredentialVersion(versionId: string): Promise<Crede
   return credential
 }
 
+/** One login read from a Chrome or Edge password export. */
+export type ImportRow = {
+  service: string
+  url: string
+  username: string
+  password: string
+  notes: string
+  /** The saved credential this login matches, if any. */
+  duplicateOf: string | null
+}
+
+export type ImportPreview = { rows: ImportRow[]; skipped: number }
+
+export type ImportChoice = Omit<ImportRow, 'duplicateOf'> & { replaceId: string | null }
+
+export type ImportResult = { imported: number; replaced: number; failed: string[] }
+
+export async function pickPasswordCsv(): Promise<string | null> {
+  return invoke<string | null>('pick_password_csv')
+}
+
+export async function previewPasswordImport(path: string): Promise<ImportPreview> {
+  return invoke<ImportPreview>('preview_password_import', { path })
+}
+
+export async function importCredentials(choices: ImportChoice[]): Promise<ImportResult> {
+  const result = await invoke<ImportResult>('import_credentials', { choices })
+  notifyVaultChanged()
+  return result
+}
+
 export async function setCredentialsFavorite(ids: string[], favorite: boolean): Promise<void> {
   await invoke<void>('set_credentials_favorite', { ids, favorite })
   notifyVaultChanged()

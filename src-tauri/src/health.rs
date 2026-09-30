@@ -33,7 +33,8 @@ pub struct HealthReport {
     /// Set when SQLite reports damage; there is no automatic repair for it.
     pub database_problem: Option<String>,
     pub problems: Vec<HealthProblem>,
-    /// Parts that could not be checked, for example while a vault is locked.
+    /// Parts that could not be checked: `content_locked`, `passwords_locked`
+    /// or `collections_locked`.
     pub skipped: Vec<String>,
 }
 
@@ -91,9 +92,7 @@ pub(crate) fn check_vault(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(fail)?;
     if !locked_collections.is_empty() {
-        report
-            .skipped
-            .push("Items in locked collections were not checked. Unlock them to include them.".into());
+        report.skipped.push("collections_locked".into());
     }
 
     let mut titles = std::collections::HashMap::new();
@@ -111,9 +110,7 @@ pub(crate) fn check_vault(
         titles.insert(id.clone(), if title.trim().is_empty() { "Untitled".to_string() } else { title });
     }
     if content_locked {
-        report
-            .skipped
-            .push("Encrypted notes and files were not checked. Unlock Kivo to include them.".into());
+        report.skipped.push("content_locked".into());
     }
 
     let mut statement = connection
@@ -162,9 +159,7 @@ pub(crate) fn check_vault(
                     .push(problem("damaged_credential", &id, "A saved login that can no longer be read"));
             }
         }
-        None => report
-            .skipped
-            .push("Saved passwords were not checked. Unlock the password vault to include them.".into()),
+        None => report.skipped.push("passwords_locked".into()),
     }
 
     Ok(report)
@@ -322,7 +317,7 @@ mod tests {
         let report = check_vault(&connection, &temp.files(), None, false, None, &[]).expect("check");
         assert_eq!(report.database_problem, None);
         assert!(report.problems.is_empty(), "{:?}", report.problems);
-        assert_eq!(report.skipped.len(), 1, "a locked password vault is reported as skipped");
+        assert_eq!(report.skipped, vec!["passwords_locked"], "a locked password vault is reported as skipped");
     }
 
     #[test]

@@ -30,7 +30,8 @@ export const restoreBackup = (path: string, password?: string) =>
 
 export type HealthProblemKind = 'missing_file' | 'stray_file' | 'damaged_item' | 'damaged_credential'
 export type HealthProblem = { kind: HealthProblemKind; id: string; label: string }
-export type HealthReport = { databaseProblem: string | null; problems: HealthProblem[]; skipped: string[] }
+export type HealthSkip = 'content_locked' | 'passwords_locked' | 'collections_locked'
+export type HealthReport = { databaseProblem: string | null; problems: HealthProblem[]; skipped: HealthSkip[] }
 
 export const checkVaultHealth = () => invoke<HealthReport>('check_vault_health')
 /** Returns how many problems the repair fixed. */

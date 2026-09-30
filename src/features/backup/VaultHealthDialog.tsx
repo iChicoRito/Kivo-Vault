@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button, Modal, Typography } from '@heroui/react'
-import { Stethoscope02Icon } from '@hugeicons/core-free-icons'
+import { Alert02Icon, CheckmarkCircle02Icon, SquareLock01Icon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react'
 
 import {
   checkVaultHealth,
@@ -8,8 +9,9 @@ import {
   type HealthProblem,
   type HealthProblemKind,
   type HealthReport,
+  type HealthSkip,
 } from '../../data/backup'
-import { DialogHeader } from '../../components/DialogHeader'
+import { HealthHeart, type HeartState } from './HealthHeart'
 import { notifyError, notifySuccess } from '../../lib/feedback'
 
 type Group = {
@@ -90,7 +92,14 @@ export function VaultHealthDialog({ open, onClose }: VaultHealthDialogProps) {
     }
   }
 
-  const healthy = report && !report.databaseProblem && report.problems.length === 0
+  const heart: HeartState = !report
+    ? 'checking'
+    : report.databaseProblem
+      ? 'damaged'
+      : report.problems.length
+        ? 'problems'
+        : 'healthy'
+  const problemCount = report?.problems.length ?? 0
 
   return (
     <Modal
@@ -102,37 +111,38 @@ export function VaultHealthDialog({ open, onClose }: VaultHealthDialogProps) {
       <Modal.Backdrop>
         <Modal.Container>
           <Modal.Dialog>
-            <DialogHeader
-              description="Kivo checks the database, your files and your encrypted records."
-              icon={Stethoscope02Icon}
-              title="Vault health"
-            />
-            <Modal.Body className="grid gap-3">
-              {!report && !error ? <p role="status">Checking your vault...</p> : null}
+            <Modal.Header className="items-center text-center">
+              <Modal.Heading className="text-xs font-semibold tracking-wider text-muted uppercase">
+                Vault health
+              </Modal.Heading>
+            </Modal.Header>
+            <Modal.Body className="grid gap-5">
               {error ? (
-                <div className="grid justify-items-start gap-2" role="alert">
-                  Kivo could not finish the check.
+                <div className="grid justify-items-center gap-3 text-center" role="alert">
+                  <Typography type="body">Kivo could not finish the check.</Typography>
                   <Button variant="secondary" onPress={() => setAttempt((value) => value + 1)}>
                     Try again
                   </Button>
                 </div>
-              ) : null}
-
-              {report?.databaseProblem ? (
-                <div className="grid gap-1 rounded-xl border border-danger p-3" role="alert">
-                  <Typography type="body" weight="medium">
-                    The vault database is damaged
+              ) : (
+                <div className="grid justify-items-center gap-1 text-center">
+                  <HealthHeart state={heart} />
+                  <Typography className="mt-2" role="status" type="h3">
+                    {STATUS[heart]}
                   </Typography>
                   <Typography color="muted" type="body-sm">
-                    {report.databaseProblem}. Kivo cannot repair this itself. Restore from a recent backup
-                    with Restore from backup.
+                    {heart === 'problems'
+                      ? `${problemCount === 1 ? '1 problem' : `${problemCount} problems`} found`
+                      : SUMMARY[heart]}
                   </Typography>
                 </div>
-              ) : null}
+              )}
 
-              {healthy ? (
-                <Typography role="status" type="body" weight="medium">
-                  No problems found. Your notes, files and saved logins are all readable.
+              {report ? <Checklist report={report} /> : null}
+
+              {report?.databaseProblem ? (
+                <Typography className="text-danger" role="alert" type="body-sm">
+                  {report.databaseProblem}. Restore from a recent backup with Restore in Settings › Data.
                 </Typography>
               ) : null}
 
@@ -144,39 +154,35 @@ export function VaultHealthDialog({ open, onClose }: VaultHealthDialogProps) {
                       <section
                         key={group.kind}
                         aria-label={group.title(problems.length)}
-                        className="grid gap-2 rounded-xl border border-default p-3"
+                        className="grid gap-2 rounded-2xl border border-default p-3"
                       >
-                        <Typography type="body" weight="medium">
-                          {group.title(problems.length)}
-                        </Typography>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <Typography type="body" weight="medium">
+                            {group.title(problems.length)}
+                          </Typography>
+                          <Button
+                            isDisabled={repairing !== null}
+                            size="sm"
+                            variant="secondary"
+                            onPress={() => void repair(group, problems)}
+                          >
+                            {repairing === group.kind ? 'Working...' : group.action}
+                          </Button>
+                        </div>
                         <Typography color="muted" type="body-sm">
                           {group.explain}
                         </Typography>
-                        <ul className="grid max-h-32 gap-0.5 overflow-y-auto text-sm">
+                        <ul className="grid max-h-28 gap-0.5 overflow-y-auto text-sm">
                           {problems.map((problem) => (
                             <li key={problem.id} className="truncate">
                               {problem.label}
                             </li>
                           ))}
                         </ul>
-                        <Button
-                          className="justify-self-start"
-                          isDisabled={repairing !== null}
-                          variant="secondary"
-                          onPress={() => void repair(group, problems)}
-                        >
-                          {repairing === group.kind ? 'Working...' : group.action}
-                        </Button>
                       </section>
                     )
                   })
                 : null}
-
-              {report?.skipped.map((note) => (
-                <Typography key={note} color="muted" type="body-sm">
-                  {note}
-                </Typography>
-              ))}
             </Modal.Body>
             <Modal.Footer>
               <Button isDisabled={repairing !== null} variant="secondary" onPress={onClose}>
@@ -187,6 +193,59 @@ export function VaultHealthDialog({ open, onClose }: VaultHealthDialogProps) {
         </Modal.Container>
       </Modal.Backdrop>
     </Modal>
+  )
+}
+
+const STATUS: Record<HeartState, string> = {
+  checking: 'Checking...',
+  healthy: 'Healthy',
+  problems: 'Needs attention',
+  damaged: 'Database damaged',
+}
+
+const SUMMARY: Record<HeartState, string> = {
+  checking: 'Looking at your database, files and records',
+  healthy: 'No problems found',
+  problems: '',
+  damaged: 'Restore from a backup to fix this',
+}
+
+type RowState = { icon: IconSvgElement; tone: string; text: string }
+
+const OK: RowState = { icon: CheckmarkCircle02Icon, tone: 'text-success', text: 'OK' }
+const LOCKED: RowState = { icon: SquareLock01Icon, tone: 'text-muted', text: 'Locked, not checked' }
+
+function issues(count: number): RowState {
+  return { icon: Alert02Icon, tone: 'text-warning', text: count === 1 ? '1 issue' : `${count} issues` }
+}
+
+/** What was checked, one row each, so the result reads at a glance. */
+function Checklist({ report }: { report: HealthReport }) {
+  const count = (...kinds: HealthProblemKind[]) =>
+    report.problems.filter((problem) => kinds.includes(problem.kind)).length
+  const skipped = (code: HealthSkip) => report.skipped.includes(code)
+  const pick = (locked: boolean, found: number) => (locked ? LOCKED : found ? issues(found) : OK)
+
+  const rows: Array<[string, RowState]> = [
+    ['Database', report.databaseProblem ? { icon: Alert02Icon, tone: 'text-danger', text: 'Damaged' } : OK],
+    ['Files', pick(false, count('missing_file', 'stray_file'))],
+    ['Notes and records', pick(skipped('content_locked'), count('damaged_item'))],
+    ['Saved logins', pick(skipped('passwords_locked'), count('damaged_credential'))],
+  ]
+  if (skipped('collections_locked')) rows.push(['Locked collections', LOCKED])
+
+  return (
+    <ul aria-label="What was checked" className="grid divide-y divide-default rounded-2xl border border-default">
+      {rows.map(([label, row]) => (
+        <li key={label} className="flex items-center justify-between gap-3 px-4 py-2.5">
+          <span className="text-sm font-medium">{label}</span>
+          <span className={`flex items-center gap-1.5 text-sm ${row.tone}`}>
+            <HugeiconsIcon aria-hidden="true" icon={row.icon} size={16} />
+            {row.text}
+          </span>
+        </li>
+      ))}
+    </ul>
   )
 }
 

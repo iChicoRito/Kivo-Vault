@@ -63,7 +63,7 @@ it('checks vault health, lists problems by kind and repairs one kind', async () 
         { kind: 'missing_file', id: 'file-1', label: 'Lease.pdf' },
         { kind: 'stray_file', id: 'orphan.bin', label: 'orphan.bin' },
       ],
-      skipped: ['Saved passwords were not checked. Unlock the password vault to include them.'],
+      skipped: ['passwords_locked'],
     })
     return Promise.resolve(null)
   })
@@ -73,11 +73,13 @@ it('checks vault health, lists problems by kind and repairs one kind', async () 
   const dialog = await screen.findByRole('dialog', { name: 'Vault health' })
   const missing = await within(dialog).findByRole('region', { name: '1 file is missing or changed' })
   expect(within(missing).getByText('Lease.pdf')).toBeInTheDocument()
-  expect(within(dialog).getByText(/Saved passwords were not checked/)).toBeInTheDocument()
+  const checklist = within(dialog).getByRole('list', { name: 'What was checked' })
+  expect(within(checklist).getByText('Saved logins').parentElement).toHaveTextContent('Locked, not checked')
+  expect(within(checklist).getByText('Files').parentElement).toHaveTextContent('2 issues')
 
   fireEvent.click(within(missing).getByRole('button', { name: 'Move items to Trash' }))
   await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('repair_vault_health', { kind: 'missing_file', ids: ['file-1'] }))
-  expect(await within(dialog).findByText(/No problems found/)).toBeInTheDocument()
+  expect(await within(dialog).findByText('Healthy')).toBeInTheDocument()
 })
 
 it('restores chosen items from an encrypted backup after its password, grouped by collection', async () => {

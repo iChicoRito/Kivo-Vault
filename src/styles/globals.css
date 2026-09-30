@@ -873,3 +873,81 @@ html[data-kivo-nav-vt='active']::view-transition-group(kivo-workspace) {
     translate: -50% 0;
   }
 }
+
+/*
+ * Vault health heart. The liquid level eases to its new height when the check
+ * finishes; two waves slide at different speeds, and a healthy heart beats
+ * gently with a few bubbles rising. All motion stops under reduced motion.
+ */
+.kivo-heart__level {
+  transition: transform 1.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .kivo-heart__wave {
+    animation: kivo-heart-wave 2.4s linear infinite;
+  }
+
+  .kivo-heart__wave--back {
+    animation-duration: 3.6s;
+    animation-direction: reverse;
+  }
+
+  .kivo-heart--beat {
+    animation: kivo-heart-beat 1.6s ease-in-out infinite;
+    transform-origin: 50% 55%;
+  }
+
+  .kivo-heart__bubble {
+    animation: kivo-heart-bubble 2.8s ease-in infinite;
+    opacity: 0;
+  }
+
+  .kivo-heart__bubble--late {
+    animation-delay: 0.9s;
+  }
+
+  .kivo-heart__bubble--later {
+    animation-delay: 1.8s;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kivo-heart__level {
+    transition: none;
+  }
+}
+
+@keyframes kivo-heart-wave {
+  to {
+    transform: translateX(-60px);
+  }
+}
+
+@keyframes kivo-heart-beat {
+  0%,
+  40%,
+  100% {
+    transform: scale(1);
+  }
+  15% {
+    transform: scale(1.06);
+  }
+  28% {
+    transform: scale(1.02);
+  }
+}
+
+@keyframes kivo-heart-bubble {
+  0% {
+    opacity: 0;
+    transform: translateY(0);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-60px);
+  }
+}

@@ -353,6 +353,39 @@ describe('PasswordsPage row actions', () => {
     await waitFor(() => expect(clipboardMock.copySecret).toHaveBeenCalledWith('s3cret-value'))
   })
 
+  it('shows earlier versions from the row menu and restores one after confirming', async () => {
+    stub('list_credentials', () => [summary()])
+    stub('list_credential_versions', () => [
+      {
+        id: 'version-1',
+        createdAt: '2026-01-01T10:00:00Z',
+        service: 'GitHub',
+        username: 'ada@example.com',
+        url: 'https://github.com',
+        password: 'old-secret',
+      },
+    ])
+    stub('restore_credential_version', () => fullCredential({ password: 'old-secret' }))
+
+    renderPasswords()
+    await screen.findByText('GitHub')
+
+    openRowMenu('GitHub')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'History' }))
+
+    const dialog = await screen.findByRole('dialog', { name: 'History: GitHub' })
+    expect(within(dialog).queryByText('old-secret')).not.toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Show' }))
+    expect(within(dialog).getByText('old-secret')).toBeInTheDocument()
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore this version' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore version' }))
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('restore_credential_version', { versionId: 'version-1' }),
+    )
+  })
+
   it('copies the username from the row menu', async () => {
     stub('list_credentials', () => [summary()])
 

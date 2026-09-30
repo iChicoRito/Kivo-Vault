@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   deleteCredentialsPermanently,
+  listCredentialVersions,
+  restoreCredentialVersion,
   listCredentials,
   loadCredential,
   lockVault,
@@ -184,6 +186,25 @@ describe('passwords data contract', () => {
     await expect(deleteCredentialsPermanently([CREDENTIAL.id])).resolves.toBeUndefined()
     expect(getTauriInvoke()).toHaveBeenCalledWith('delete_credentials_permanently', {
       ids: [CREDENTIAL.id],
+    })
+    expect(notifyVaultChanged).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('credential history', () => {
+  it('lists versions with list_credential_versions and { id }', async () => {
+    getTauriInvoke().mockResolvedValue([])
+
+    await expect(listCredentialVersions('cred-1')).resolves.toEqual([])
+    expect(getTauriInvoke()).toHaveBeenCalledWith('list_credential_versions', { id: 'cred-1' })
+  })
+
+  it('restores a version with restore_credential_version and tells the app', async () => {
+    getTauriInvoke().mockResolvedValue(CREDENTIAL)
+
+    await expect(restoreCredentialVersion('version-1')).resolves.toEqual(CREDENTIAL)
+    expect(getTauriInvoke()).toHaveBeenCalledWith('restore_credential_version', {
+      versionId: 'version-1',
     })
     expect(notifyVaultChanged).toHaveBeenCalledTimes(1)
   })

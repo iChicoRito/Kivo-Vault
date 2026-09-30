@@ -134,6 +134,8 @@ pub fn run() {
             passwords::list_credentials,
             passwords::load_credential,
             passwords::save_credential,
+            passwords::list_credential_versions,
+            passwords::restore_credential_version,
             passwords::set_credentials_favorite,
             passwords::trash_credentials,
             passwords::restore_credentials,

@@ -127,9 +127,24 @@ pub struct CredentialFilter {
     pub trashed: Option<bool>,
 }
 
+/// An earlier state of a credential, kept when its details change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialVersion {
+    pub id: String,
+    pub created_at: String,
+    pub service: String,
+    pub username: String,
+    pub url: String,
+    pub password: String,
+}
+
+/// How many earlier versions each credential keeps, the same as note history.
+const CREDENTIAL_VERSION_LIMIT: i64 = 20;
+
 /// Every field a person typed, sealed as one encrypted blob per row. Only the
 /// id, favorite flag, trash stamp and dates stay readable in the database.
-#[derive(Serialize, Deserialize)]
+#[derive(PartialEq, Serialize, Deserialize)]
 struct CredentialData {
     service: String,
     username: String,
@@ -162,12 +177,160 @@ fn open_credential(
     nonce: &[u8],
     ciphertext: &[u8],
 ) -> Result<CredentialData, String> {
+    open_sealed(key, &credential_aad(id), nonce, ciphertext)
+}
+
+fn open_sealed(
+    key: &[u8; KEY_LENGTH],
+    aad: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> Result<CredentialData, String> {
     let nonce: [u8; NONCE_LENGTH] = nonce
         .try_into()
         .map_err(|_| "Could not read the credential".to_string())?;
-    let json = decrypt(key, &nonce, ciphertext, &credential_aad(id))
+    let json = decrypt(key, &nonce, ciphertext, aad)
         .map_err(|_| "Could not read the credential".to_string())?;
     serde_json::from_slice(&json).map_err(|_| "Could not read the credential".to_string())
+}
+
+/// Ties each saved version to its credential and its own row, so versions
+/// cannot be swapped between credentials or with the live blob.
+fn version_aad(credential_id: &str, version_id: &str) -> Vec<u8> {
+    format!("kivo:credential-version:v1:{credential_id}:{version_id}").into_bytes()
+}
+
+/// Keeps the credential's current details as a version when `next` changes
+/// them, then drops the oldest versions past the limit. Rows still waiting for
+/// the legacy conversion have no blob and are skipped.
+fn keep_previous_version(
+    connection: &Connection,
+    key: &[u8; KEY_LENGTH],
+    id: &str,
+    next: &CredentialData,
+) -> Result<(), String> {
+    let fail = |error: rusqlite::Error| format!("Could not save the credential: {error}");
+    let sealed: Option<(Option<Vec<u8>>, Option<Vec<u8>>)> = connection
+        .query_row(
+            "SELECT data_nonce, data_ciphertext FROM credentials WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(fail)?;
+    let Some((Some(nonce), Some(ciphertext))) = sealed else {
+        return Ok(());
+    };
+    let current = open_credential(key, id, &nonce, &ciphertext)?;
+
+    if &current == next {
+        return Ok(());
+    }
+
+    let version_id = new_id(connection).map_err(fail)?;
+    let json =
+        serde_json::to_vec(&current).map_err(|_| "Could not protect the data".to_string())?;
+    let version_nonce = random_bytes::<NONCE_LENGTH>()?;
+    let version_ciphertext = encrypt(key, &version_nonce, &json, &version_aad(id, &version_id))?;
+    connection
+        .execute(
+            "INSERT INTO credential_versions
+               (id, credential_id, created_at, data_nonce, data_ciphertext)
+             VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?3, ?4)",
+            params![version_id, id, version_nonce.as_slice(), version_ciphertext],
+        )
+        .map_err(fail)?;
+    connection
+        .execute(
+            "DELETE FROM credential_versions
+             WHERE credential_id = ?1 AND id NOT IN (
+               SELECT id FROM credential_versions WHERE credential_id = ?1
+               ORDER BY created_at DESC, rowid DESC LIMIT ?2
+             )",
+            params![id, CREDENTIAL_VERSION_LIMIT],
+        )
+        .map_err(fail)?;
+    Ok(())
+}
+
+/// Newest first.
+fn read_credential_versions(
+    connection: &Connection,
+    key: &[u8; KEY_LENGTH],
+    credential_id: &str,
+) -> Result<Vec<CredentialVersion>, String> {
+    let fail = |error: rusqlite::Error| format!("Could not read the history: {error}");
+    let mut statement = connection
+        .prepare(
+            "SELECT id, created_at, data_nonce, data_ciphertext FROM credential_versions
+             WHERE credential_id = ?1 ORDER BY created_at DESC, rowid DESC",
+        )
+        .map_err(fail)?;
+    let rows = statement
+        .query_map(params![credential_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        })
+        .map_err(fail)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(fail)?;
+
+    rows.into_iter()
+        .map(|(id, created_at, nonce, ciphertext)| {
+            let data = open_sealed(key, &version_aad(credential_id, &id), &nonce, &ciphertext)?;
+            Ok(CredentialVersion {
+                id,
+                created_at,
+                service: data.service,
+                username: data.username,
+                url: data.url,
+                password: data.password,
+            })
+        })
+        .collect()
+}
+
+/// Puts a saved version back. The details it replaces are kept as a version
+/// first, so a restore can itself be undone.
+fn restore_credential_version_in(
+    connection: &mut Connection,
+    key: &[u8; KEY_LENGTH],
+    version_id: &str,
+) -> Result<Credential, String> {
+    let fail = |error: rusqlite::Error| format!("Could not restore this version: {error}");
+    let (credential_id, nonce, ciphertext, is_favorite): (String, Vec<u8>, Vec<u8>, i64) =
+        connection
+            .query_row(
+                "SELECT v.credential_id, v.data_nonce, v.data_ciphertext, c.is_favorite
+                 FROM credential_versions v JOIN credentials c ON c.id = v.credential_id
+                 WHERE v.id = ?1",
+                params![version_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(fail)?
+            .ok_or_else(|| "This version was not found".to_string())?;
+    let data = open_sealed(key, &version_aad(&credential_id, version_id), &nonce, &ciphertext)?;
+
+    write_credential(
+        connection,
+        key,
+        &CredentialInput {
+            id: Some(credential_id),
+            service: data.service,
+            username: data.username,
+            password: data.password,
+            url: data.url,
+            category: data.category,
+            tags: data.tags,
+            notes: data.notes,
+            is_favorite: is_favorite != 0,
+        },
+    )
 }
 
 /// Rows written before every field was encrypted: readable columns plus a
@@ -619,6 +782,7 @@ fn write_credential(
     let transaction = connection.transaction().map_err(fail)?;
     let id = match &input.id {
         Some(id) => {
+            keep_previous_version(&transaction, key, id, &data)?;
             let updated = transaction
                 .execute(
                     "UPDATE credentials
@@ -960,6 +1124,30 @@ pub fn save_credential(
     vault: State<'_, VaultKeyState>,
 ) -> Result<Credential, String> {
     save_credential_with_state(db.inner(), vault.inner(), &input)
+}
+
+#[tauri::command]
+pub fn list_credential_versions(
+    id: String,
+    db: State<'_, DatabaseState>,
+    vault: State<'_, VaultKeyState>,
+) -> Result<Vec<CredentialVersion>, String> {
+    let key = vault.require_key()?;
+    let connection = db.require_connection()?;
+
+    read_credential_versions(connection.as_ref().expect("checked above"), &key, &id)
+}
+
+#[tauri::command]
+pub fn restore_credential_version(
+    version_id: String,
+    db: State<'_, DatabaseState>,
+    vault: State<'_, VaultKeyState>,
+) -> Result<Credential, String> {
+    let key = vault.require_key()?;
+    let mut connection = db.require_connection()?;
+
+    restore_credential_version_in(connection.as_mut().expect("checked above"), &key, &version_id)
 }
 
 #[tauri::command]
@@ -1677,5 +1865,100 @@ mod tests {
         }
 
         assert!(load_credential_with_state(&db, &vault, &second.id).is_err());
+    }
+
+    fn versions(db: &DatabaseState, vault: &VaultKeyState, id: &str) -> Vec<CredentialVersion> {
+        let key = vault.require_key().expect("vault is unlocked");
+        let connection = db.require_connection().expect("lock connection");
+        read_credential_versions(connection.as_ref().expect("connection is initialized"), &key, id)
+            .expect("read versions")
+    }
+
+    fn resave(db: &DatabaseState, vault: &VaultKeyState, id: &str, password: &str) -> Credential {
+        let mut input = credential_input("Bank", password);
+        input.id = Some(id.to_string());
+        save_credential_with_state(db, vault, &input).expect("save change")
+    }
+
+    #[test]
+    fn changing_a_credential_keeps_the_old_details_and_restore_brings_them_back() {
+        let (_workspace, db, vault) = unlocked_vault();
+        let saved = save_credential_with_state(&db, &vault, &credential_input("Bank", "old-pass"))
+            .expect("save");
+        assert!(versions(&db, &vault, &saved.id).is_empty(), "a new credential has no history");
+
+        resave(&db, &vault, &saved.id, "old-pass");
+        assert!(
+            versions(&db, &vault, &saved.id).is_empty(),
+            "saving without a change keeps no version"
+        );
+
+        resave(&db, &vault, &saved.id, "new-pass");
+        let history = versions(&db, &vault, &saved.id);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].password, "old-pass");
+        assert_eq!(history[0].service, "Bank");
+
+        let restored = {
+            let key = vault.require_key().expect("vault is unlocked");
+            let mut connection = db.require_connection().expect("lock connection");
+            restore_credential_version_in(
+                connection.as_mut().expect("connection is initialized"),
+                &key,
+                &history[0].id,
+            )
+            .expect("restore version")
+        };
+        assert_eq!(restored.password, "old-pass");
+
+        let history = versions(&db, &vault, &saved.id);
+        assert_eq!(history.len(), 2, "the replaced details are kept too");
+        assert_eq!(history[0].password, "new-pass");
+    }
+
+    #[test]
+    fn history_keeps_only_the_newest_twenty_versions() {
+        let (_workspace, db, vault) = unlocked_vault();
+        let saved = save_credential_with_state(&db, &vault, &credential_input("Bank", "pass-0"))
+            .expect("save");
+        for n in 1..=25 {
+            resave(&db, &vault, &saved.id, &format!("pass-{n}"));
+        }
+
+        let history = versions(&db, &vault, &saved.id);
+        assert_eq!(history.len(), 20);
+        assert_eq!(history[0].password, "pass-24");
+        assert_eq!(history[19].password, "pass-5");
+    }
+
+    #[test]
+    fn a_version_moved_to_another_credential_does_not_open() {
+        let (_workspace, db, vault) = unlocked_vault();
+        let first = save_credential_with_state(&db, &vault, &credential_input("Bank", "one"))
+            .expect("save first");
+        let second = save_credential_with_state(&db, &vault, &credential_input("Forum", "two"))
+            .expect("save second");
+        resave(&db, &vault, &first.id, "one-changed");
+
+        {
+            let connection = db.require_connection().expect("lock connection");
+            connection
+                .as_ref()
+                .expect("connection is initialized")
+                .execute(
+                    "UPDATE credential_versions SET credential_id = ?1 WHERE credential_id = ?2",
+                    params![second.id, first.id],
+                )
+                .expect("move version");
+        }
+
+        let key = vault.require_key().expect("vault is unlocked");
+        let connection = db.require_connection().expect("lock connection");
+        assert!(read_credential_versions(
+            connection.as_ref().expect("connection is initialized"),
+            &key,
+            &second.id
+        )
+        .is_err());
     }
 }

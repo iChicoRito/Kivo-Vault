@@ -6,6 +6,7 @@ import {
   Copy01Icon,
   Delete02Icon,
   DeletePutBackIcon,
+  HistoryIcon,
   PencilEdit02Icon,
   StarIcon,
   StarOffIcon,
@@ -14,6 +15,7 @@ import {
 import { ItemCard, type ItemCardAction } from '../../components/items/ItemCard'
 import { ConfirmDialog } from '../../components/items/dialogs'
 import { CredentialAvatar } from './CredentialAvatar'
+import { CredentialHistoryDialog } from './CredentialHistoryDialog'
 import { copySecret, copyText } from '../../lib/clipboard'
 import { notifyError, notifySuccess } from '../../lib/feedback'
 import {
@@ -63,6 +65,7 @@ export function CredentialRow({
   onSelect,
 }: CredentialRowProps) {
   const [confirm, setConfirm] = useState<ConfirmKind>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   async function copyPassword() {
     try {
@@ -131,6 +134,7 @@ export function CredentialRow({
     else if (key === 'copy-username') void copyUsername()
     else if (key === 'copy-password') void copyPassword()
     else if (key === 'favorite') void toggleFavorite()
+    else if (key === 'history') setHistoryOpen(true)
     else if (key === 'view-trash') onViewTrash()
     else if (key === 'back') onBackToPasswords()
     else if (key === 'trash') setConfirm('trash')
@@ -153,6 +157,7 @@ export function CredentialRow({
           label: credential.isFavorite ? 'Remove favorite' : 'Add to favorites',
           icon: credential.isFavorite ? StarOffIcon : StarIcon,
         },
+        { id: 'history', label: 'History', icon: HistoryIcon },
         { id: 'view-trash', label: 'View Trash', icon: Archive01Icon },
         { id: 'trash', label: 'Move to trash', icon: Delete02Icon, danger: true },
       ]
@@ -178,6 +183,13 @@ export function CredentialRow({
         onAction={handleAction}
         onSelect={onSelect}
         onOpen={() => onEdit(credential.id)}
+      />
+
+      <CredentialHistoryDialog
+        credentialId={historyOpen ? credential.id : null}
+        service={credential.service}
+        onClose={() => setHistoryOpen(false)}
+        onRestored={onChanged}
       />
 
       <ConfirmDialog

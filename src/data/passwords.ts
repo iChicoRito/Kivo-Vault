@@ -18,6 +18,15 @@ export type CredentialSummary = {
 
 export type Credential = CredentialSummary & { notes: string; password: string }
 
+export type CredentialVersion = {
+  id: string
+  createdAt: string
+  service: string
+  username: string
+  url: string
+  password: string
+}
+
 export type CredentialInput = {
   id?: string
   service: string
@@ -79,6 +88,16 @@ export async function loadCredential(id: string): Promise<Credential> {
 
 export async function saveCredential(input: CredentialInput): Promise<Credential> {
   const credential = await invoke<Credential>('save_credential', { input })
+  notifyVaultChanged()
+  return credential
+}
+
+export async function listCredentialVersions(id: string): Promise<CredentialVersion[]> {
+  return invoke<CredentialVersion[]>('list_credential_versions', { id })
+}
+
+export async function restoreCredentialVersion(versionId: string): Promise<Credential> {
+  const credential = await invoke<Credential>('restore_credential_version', { versionId })
   notifyVaultChanged()
   return credential
 }

@@ -660,7 +660,7 @@ const SEALED_FORMAT: i64 = 2;
 const SEALED_HEADER: &str = "backup.json";
 const SEALED_MANIFEST: &str = "manifest.enc";
 const SEALED_DATABASE: &str = "kivo.db.enc";
-const WRONG_BACKUP_PASSWORD: &str = "That Master Password does not open this backup.";
+pub(crate) const WRONG_BACKUP_PASSWORD: &str = "That Master Password does not open this backup.";
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -689,7 +689,7 @@ fn open_file(key: &[u8; 32], source: &Path, target: &Path, name: &str) -> Result
     fs::write(target, plain).map_err(|e| e.to_string())
 }
 
-fn temp_stage(label: &str) -> Result<PathBuf, String> {
+pub(crate) fn temp_stage(label: &str) -> Result<PathBuf, String> {
     unique_sibling(&std::env::temp_dir().join("kivo-backup"), label)
 }
 

@@ -524,9 +524,21 @@ fn store_import_file(
     file: &FileRecord,
 ) -> Result<(), String> {
     let bytes = read_import_bytes(root, file).map_err(str::to_string)?;
+    store_file_bytes(connection, files_dir, key, item_id, &file.original_name, bytes)
+}
+
+/// Saves file bytes for a new item, encrypted with `key` when there is one.
+fn store_file_bytes(
+    connection: &Connection,
+    files_dir: &Path,
+    key: Option<&[u8; 32]>,
+    item_id: &str,
+    original_name: &str,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
     let byte_size =
         i64::try_from(bytes.len()).map_err(|_| "Managed file is too large".to_string())?;
-    let stored_name = fresh_stored_name(connection, &file.original_name)?;
+    let stored_name = fresh_stored_name(connection, original_name)?;
     let (stored_bytes, encrypted) = match key {
         Some(key) => (encryption::encrypt_file(key, item_id, &bytes)?, true),
         None => (bytes, false),
@@ -540,7 +552,7 @@ fn store_import_file(
             params![
                 item_id,
                 stored_name,
-                file.original_name,
+                original_name,
                 byte_size,
                 i64::from(encrypted)
             ],
@@ -684,6 +696,19 @@ fn read_items(
     only: Option<&str>,
     locked: &[String],
 ) -> Result<Vec<PortableItem>, String> {
+    Ok(read_items_with_ids(connection, keys, only, locked)?
+        .into_iter()
+        .map(|(_, item)| item)
+        .collect())
+}
+
+/// Like `read_items`, paired with each item's id.
+pub(crate) fn read_items_with_ids(
+    connection: &Connection,
+    keys: &ContentKeyState,
+    only: Option<&str>,
+    locked: &[String],
+) -> Result<Vec<(String, PortableItem)>, String> {
     let key = encryption::key_if_enabled(connection, keys)?;
     let mut statement = connection
         .prepare(&format!(
@@ -766,7 +791,7 @@ fn read_items(
         } else {
             (row.description, row.content, row.url)
         };
-        items.push(PortableItem {
+        items.push((row.id, PortableItem {
             kind: row.kind,
             title: row.title,
             description,
@@ -780,9 +805,108 @@ fn read_items(
             updated_at: row.updated_at,
             deleted_at: row.deleted_at,
             file: row.file,
-        });
+        }));
     }
     Ok(items)
+}
+
+/// Reads one managed file from another vault's folder (a backup), opening it
+/// with that vault's key when it was stored encrypted.
+fn read_source_file(
+    source: &Connection,
+    source_key: Option<&[u8; 32]>,
+    source_root: &Path,
+    source_id: &str,
+    file: &FileRecord,
+) -> Result<Vec<u8>, String> {
+    if !plain_name(&file.stored_name) {
+        return Err("Unsafe managed file name".into());
+    }
+    let path = source_root.join("files").join(&file.stored_name);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err("Managed file is not a regular file".into())
+        }
+        Ok(metadata) if metadata.len() > MAX_IMPORT_FILE_BYTES => return Err(TOO_LARGE.into()),
+        Ok(_) => {}
+        Err(_) => return Err("Managed file is missing or unreadable".into()),
+    }
+    let bytes = fs::read(&path).map_err(|_| "Managed file is missing or unreadable".to_string())?;
+    let encrypted: bool = source
+        .query_row(
+            "SELECT encrypted FROM files WHERE item_id = ?1",
+            params![source_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Could not read the backup: {error}"))?
+        != 0;
+    let bytes = if encrypted {
+        let key = source_key.ok_or("This file is encrypted and the backup is locked")?;
+        encryption::decrypt_file(key, source_id, &bytes)?
+    } else {
+        bytes
+    };
+    if bytes.len() as u64 != file.byte_size {
+        return Err("Managed file size does not match the backup".into());
+    }
+    Ok(bytes)
+}
+
+/// Copies the chosen items of another vault (an opened backup) into this one
+/// as brand-new items. Nothing in this vault is merged or overwritten.
+pub(crate) fn copy_items_from(
+    connection: &mut Connection,
+    files_dir: &Path,
+    keys: &ContentKeyState,
+    source: &Connection,
+    source_keys: &ContentKeyState,
+    source_root: &Path,
+    ids: &[String],
+) -> Result<ImportReport, String> {
+    let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+    let items: Vec<(String, PortableItem)> = read_items_with_ids(source, source_keys, None, &[])?
+        .into_iter()
+        .filter(|(id, _)| wanted.contains(id.as_str()))
+        .collect();
+    let source_key = encryption::key_if_enabled(source, source_keys)?;
+    let key = encryption::key_if_enabled(connection, keys)?;
+    let mut report = ImportReport::default();
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("Could not start the restore: {error}"))?;
+    for (source_id, item) in &items {
+        // Read the file first, so an item whose file is broken is skipped whole.
+        let bytes = match &item.file {
+            Some(file) => {
+                match read_source_file(source, source_key.as_ref(), source_root, source_id, file) {
+                    Ok(bytes) => Some((file.original_name.as_str(), bytes)),
+                    Err(reason) => {
+                        report.skipped.push(SkippedItem { title: item.title.clone(), reason });
+                        continue;
+                    }
+                }
+            }
+            None => None,
+        };
+        let id = match insert_item(&transaction, key.as_ref(), item) {
+            Ok(id) => id,
+            Err(reason) => {
+                report.skipped.push(SkippedItem { title: item.title.clone(), reason });
+                continue;
+            }
+        };
+        if let Some((original_name, bytes)) = bytes {
+            store_file_bytes(&transaction, files_dir, key.as_ref(), &id, original_name, bytes)?;
+        }
+        report.imported += 1;
+    }
+    if let Some(key) = key.as_ref() {
+        encryption::seal_all(&transaction, key)?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not finish the restore: {error}"))?;
+    Ok(report)
 }
 
 /// Export is read-only on the vault. A protected file is decrypted in memory so

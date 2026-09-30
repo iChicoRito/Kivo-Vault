@@ -1,4 +1,5 @@
 import { notifyVaultChanged } from './events'
+import type { ImportReport } from './portability'
 import { invoke } from './runtime'
 
 export type BackupInfo = {
@@ -37,4 +38,24 @@ export const repairVaultHealth = async (kind: HealthProblemKind, ids: string[]) 
   const fixed = await invoke<number>('repair_vault_health', { kind, ids })
   notifyVaultChanged()
   return fixed
+}
+
+export type BackupItem = {
+  id: string
+  kind: 'note' | 'source' | 'file'
+  title: string
+  collection: string | null
+  updatedAt: string
+}
+
+export const listBackupContents = (path: string, password?: string) =>
+  invoke<BackupItem[]>('list_backup_contents', password ? { path, password } : { path })
+/** Adds the chosen backup items to this vault as new copies. */
+export const restoreFromBackup = async (path: string, ids: string[], password?: string) => {
+  const report = await invoke<ImportReport>(
+    'restore_from_backup',
+    password ? { path, password, ids } : { path, ids },
+  )
+  notifyVaultChanged()
+  return report
 }

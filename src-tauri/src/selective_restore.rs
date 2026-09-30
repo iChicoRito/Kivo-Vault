@@ -1,0 +1,307 @@
+//! Selective restore: pick notes, sources and files from a backup and add them
+//! to the live vault as new copies. The backup is opened into a temp folder,
+//! brought up to the current schema there, and read with its own key.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use rusqlite::Connection;
+use serde::Serialize;
+use tauri::State;
+
+use crate::backup;
+use crate::database::{apply_migrations, DatabaseState};
+use crate::encryption::{self, ContentKeyState};
+use crate::portability::{self, ImportReport};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupItem {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub collection: Option<String>,
+    pub updated_at: String,
+}
+
+/// An opened backup. Dropping it deletes the temp copy and forgets the key.
+struct OpenedBackup {
+    stage: PathBuf,
+    /// Where the backup's `files/` folder is: the temp copy for a sealed
+    /// backup, the backup folder itself for a plain one.
+    files_root: PathBuf,
+    connection: Option<Connection>,
+    keys: ContentKeyState,
+}
+
+impl Drop for OpenedBackup {
+    fn drop(&mut self) {
+        let _ = self.keys.clear();
+        drop(self.connection.take());
+        let _ = fs::remove_dir_all(&self.stage);
+    }
+}
+
+impl OpenedBackup {
+    fn connection(&self) -> &Connection {
+        self.connection.as_ref().expect("open until dropped")
+    }
+}
+
+fn open_backup(path: &Path, password: Option<&str>) -> Result<OpenedBackup, String> {
+    let info = backup::inspect_backup_at(path);
+    if !info.valid {
+        return Err(format!("This backup has problems: {}", info.problems.join("; ")));
+    }
+    let (stage, files_root) = if info.encrypted {
+        let password = password.ok_or("Enter the Master Password this backup was made with.")?;
+        let stage = backup::open_sealed_backup(path, password)?;
+        (stage.clone(), stage)
+    } else {
+        let stage = backup::temp_stage("pick")?;
+        fs::create_dir_all(&stage).map_err(|error| error.to_string())?;
+        if let Err(error) = fs::copy(path.join("kivo.db"), stage.join("kivo.db")) {
+            let _ = fs::remove_dir_all(&stage);
+            return Err(format!("Could not read the backup: {error}"));
+        }
+        (stage, path.to_path_buf())
+    };
+    let mut opened = OpenedBackup {
+        connection: None,
+        keys: ContentKeyState::default(),
+        stage,
+        files_root,
+    };
+    // Only the temp copy is upgraded; the backup itself is never changed.
+    let mut connection = Connection::open(opened.stage.join("kivo.db"))
+        .map_err(|error| format!("Could not read the backup: {error}"))?;
+    apply_migrations(&mut connection).map_err(|error| format!("Could not read the backup: {error}"))?;
+    if encryption::is_enabled(&connection)? {
+        let password = password.ok_or("Enter the Master Password this backup was made with.")?;
+        let key = encryption::unlock(&connection, password)?
+            .ok_or(backup::WRONG_BACKUP_PASSWORD)?;
+        opened.keys.store(key)?;
+    }
+    opened.connection = Some(connection);
+    Ok(opened)
+}
+
+pub(crate) fn list_backup_items(path: &Path, password: Option<&str>) -> Result<Vec<BackupItem>, String> {
+    let opened = open_backup(path, password)?;
+    let items = portability::read_items_with_ids(opened.connection(), &opened.keys, None, &[])?;
+    Ok(items
+        .into_iter()
+        .map(|(id, item)| BackupItem {
+            id,
+            kind: item.kind,
+            title: if item.title.trim().is_empty() { "Untitled".into() } else { item.title },
+            collection: item.collection,
+            updated_at: item.updated_at,
+        })
+        .collect())
+}
+
+pub(crate) fn restore_backup_items(
+    state: &DatabaseState,
+    path: &Path,
+    password: Option<&str>,
+    ids: &[String],
+) -> Result<ImportReport, String> {
+    if ids.is_empty() {
+        return Ok(ImportReport::default());
+    }
+    let opened = open_backup(path, password)?;
+    let mut connection = state.require_connection()?;
+    portability::copy_items_from(
+        connection.as_mut().expect("checked above"),
+        state.files_dir(),
+        state.content_key(),
+        opened.connection(),
+        &opened.keys,
+        &opened.files_root,
+        ids,
+    )
+}
+
+/// A wrong password counts toward the same wrong-try wait as a full restore.
+fn with_attempt<T>(state: &DatabaseState, result: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    state.check_attempt()?;
+    let result = result();
+    let wrong = matches!(&result, Err(error) if error.starts_with("That Master Password"));
+    if wrong || result.is_ok() {
+        state.record_attempt(!wrong);
+    }
+    result
+}
+
+#[tauri::command]
+pub fn list_backup_contents(
+    path: String,
+    password: Option<String>,
+    state: State<'_, DatabaseState>,
+) -> Result<Vec<BackupItem>, String> {
+    with_attempt(&state, || list_backup_items(Path::new(&path), password.as_deref()))
+}
+
+#[tauri::command]
+pub fn restore_from_backup(
+    path: String,
+    password: Option<String>,
+    ids: Vec<String>,
+    state: State<'_, DatabaseState>,
+) -> Result<ImportReport, String> {
+    with_attempt(&state, || {
+        restore_backup_items(&state, Path::new(&path), password.as_deref(), &ids)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PASSWORD: &str = "correct horse battery";
+
+    struct Temp(PathBuf);
+
+    impl Temp {
+        fn new(label: &str) -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock is after the epoch")
+                .as_nanos();
+            Self(std::env::temp_dir().join(format!(
+                "kivo-selective-{label}-{}-{unique}",
+                std::process::id()
+            )))
+        }
+
+        /// A vault in `<root>/<name>` with a note in "Work" and a file.
+        fn vault(&self, name: &str) -> DatabaseState {
+            let state = DatabaseState::new(self.0.join(name).join("kivo.db"), self.0.join(name).join("files"));
+            state.initialize().expect("initialize vault");
+            fs::create_dir_all(state.files_dir()).expect("files folder");
+            fs::create_dir_all(self.0.join("backups")).expect("backups folder");
+            state
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn seed(state: &DatabaseState) {
+        let connection = state.require_connection().expect("connection");
+        let connection = connection.as_ref().expect("initialized");
+        connection
+            .execute_batch(
+                "INSERT INTO collections (id, name, sort_order, created_at)
+                   VALUES ('work', 'Work', 99, '2026-01-01');
+                 INSERT INTO items (id, kind, title, content, collection_id, tags, created_at, updated_at)
+                   VALUES ('note-1', 'note', 'Plan', '<p>Ship it</p>', 'work', '[]', '2026-01-01', '2026-01-01'),
+                          ('file-1', 'file', 'Lease', NULL, NULL, '[]', '2026-01-01', '2026-01-01');
+                 INSERT INTO files (item_id, stored_name, original_name, byte_size, imported_at, encrypted)
+                   VALUES ('file-1', 'lease.txt', 'lease.txt', 5, '2026-01-01', 0);",
+            )
+            .expect("seed items");
+        fs::write(state.files_dir().join("lease.txt"), b"hello").expect("write file");
+    }
+
+    fn encrypt(state: &DatabaseState) {
+        let mut connection = state.require_connection().expect("connection");
+        let connection = connection.as_mut().expect("initialized");
+        let verifier = crate::security::hash_secret(PASSWORD).expect("hash");
+        crate::database::write_password_verifier(connection, &verifier).expect("verifier");
+        encryption::enable(connection, state.files_dir(), PASSWORD).expect("encrypt vault");
+    }
+
+    fn live_items(state: &DatabaseState) -> Vec<(String, portability::PortableItem)> {
+        let connection = state.require_connection().expect("connection");
+        portability::read_items_with_ids(connection.as_ref().expect("initialized"), state.content_key(), None, &[])
+            .expect("read live items")
+    }
+
+    #[test]
+    fn a_plain_backup_lists_its_items_and_restores_chosen_ones_as_copies() {
+        let temp = Temp::new("plain");
+        let old = temp.vault("old");
+        seed(&old);
+        let backup = {
+            let connection = old.require_connection().expect("connection");
+            backup::create_backup_in(connection.as_ref().expect("initialized"), old.files_dir(), &temp.0.join("backups"))
+                .expect("backup")
+        };
+        let backup_path = Path::new(&backup.path);
+
+        let listed = list_backup_items(backup_path, None).expect("list");
+        assert_eq!(listed.len(), 2);
+        let plan = listed.iter().find(|item| item.id == "note-1").expect("note listed");
+        assert_eq!((plan.title.as_str(), plan.collection.as_deref()), ("Plan", Some("Work")));
+
+        let live = temp.vault("live");
+        let report = restore_backup_items(&live, backup_path, None, &["note-1".into(), "file-1".into()])
+            .expect("restore");
+        assert_eq!(report.imported, 2, "{:?}", report.skipped);
+        let items = live_items(&live);
+        let note = items.iter().find(|(_, item)| item.title == "Plan").expect("note restored");
+        assert_ne!(note.0, "note-1", "restored items get new ids");
+        assert_eq!(note.1.collection.as_deref(), Some("Work"));
+        let (_, file) = items.iter().find(|(_, item)| item.title == "Lease").expect("file restored");
+        let stored = &file.file.as_ref().expect("file record").stored_name;
+        assert_eq!(fs::read(live.files_dir().join(stored)).expect("file bytes"), b"hello");
+    }
+
+    #[test]
+    fn an_encrypted_backup_needs_its_password_and_its_files_are_decrypted_in_memory() {
+        let temp = Temp::new("sealed");
+        let old = temp.vault("old");
+        seed(&old);
+        encrypt(&old);
+        let backup = {
+            let connection = old.require_connection().expect("connection");
+            backup::create_sealed_backup_in(
+                connection.as_ref().expect("initialized"),
+                old.files_dir(),
+                &temp.0.join("backups"),
+                PASSWORD,
+            )
+            .expect("sealed backup")
+        };
+        let backup_path = Path::new(&backup.path);
+
+        assert!(list_backup_items(backup_path, None).is_err());
+        assert_eq!(
+            list_backup_items(backup_path, Some("wrong password")).unwrap_err(),
+            backup::WRONG_BACKUP_PASSWORD
+        );
+        let listed = list_backup_items(backup_path, Some(PASSWORD)).expect("list");
+        assert!(listed.iter().any(|item| item.title == "Plan"), "titles are decrypted");
+
+        let live = temp.vault("live");
+        let report = restore_backup_items(&live, backup_path, Some(PASSWORD), &["file-1".into()])
+            .expect("restore");
+        assert_eq!(report.imported, 1, "{:?}", report.skipped);
+        let items = live_items(&live);
+        assert_eq!(items.len(), 1, "only the chosen item is restored");
+        let stored = &items[0].1.file.as_ref().expect("file record").stored_name;
+        assert_eq!(fs::read(live.files_dir().join(stored)).expect("file bytes"), b"hello");
+    }
+
+    #[test]
+    fn the_temp_copy_is_deleted_when_the_backup_is_closed() {
+        let temp = Temp::new("cleanup");
+        let old = temp.vault("old");
+        seed(&old);
+        let backup = {
+            let connection = old.require_connection().expect("connection");
+            backup::create_backup_in(connection.as_ref().expect("initialized"), old.files_dir(), &temp.0.join("backups"))
+                .expect("backup")
+        };
+        let opened = open_backup(Path::new(&backup.path), None).expect("open");
+        let stage = opened.stage.clone();
+        assert!(stage.join("kivo.db").is_file());
+        drop(opened);
+        assert!(!stage.exists());
+    }
+}

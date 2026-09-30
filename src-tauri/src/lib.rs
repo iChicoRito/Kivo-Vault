@@ -7,6 +7,7 @@ mod insights;
 mod passwords;
 mod portability;
 mod security;
+mod selective_restore;
 mod vault;
 
 /// Lives here because it touches both backup and the password vault, and the
@@ -142,6 +143,8 @@ pub fn run() {
             passwords::import_credentials,
             health::check_vault_health,
             health::repair_vault_health,
+            selective_restore::list_backup_contents,
+            selective_restore::restore_from_backup,
             passwords::set_credentials_favorite,
             passwords::trash_credentials,
             passwords::restore_credentials,

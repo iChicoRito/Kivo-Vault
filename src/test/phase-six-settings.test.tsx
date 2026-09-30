@@ -80,6 +80,42 @@ it('checks vault health, lists problems by kind and repairs one kind', async () 
   expect(await within(dialog).findByText(/No problems found/)).toBeInTheDocument()
 })
 
+it('restores chosen items from an encrypted backup after its password, grouped by collection', async () => {
+  const backup = {
+    path: 'C:/safe/Kivo Backup', createdAt: '2026-09-24', appVersion: '0.2', schemaVersion: 18,
+    itemCount: 0, fileCount: 0, valid: true, problems: [], encrypted: true,
+  }
+  getTauriInvoke().mockImplementation((command: string) => {
+    if (command === 'read_protection_state') return Promise.resolve({ lockEnabled: false, encryptionEnabled: false })
+    if (command === 'pick_backup_source') return Promise.resolve('C:/safe/Kivo Backup')
+    if (command === 'inspect_backup') return Promise.resolve(backup)
+    if (command === 'list_backup_contents') return Promise.resolve([
+      { id: 'note-1', kind: 'note', title: 'Plan', collection: 'Work', updatedAt: '2026-09-01' },
+      { id: 'note-2', kind: 'note', title: 'Retro', collection: 'Work', updatedAt: '2026-09-02' },
+      { id: 'file-1', kind: 'file', title: 'Lease', collection: null, updatedAt: '2026-09-03' },
+    ])
+    if (command === 'restore_from_backup') return Promise.resolve({ imported: 2, skipped: [], losses: [] })
+    return Promise.resolve(null)
+  })
+  render(<BackupSettings />)
+  fireEvent.click(screen.getByRole('button', { name: 'Restore...' }))
+  fireEvent.click(await screen.findByRole('menuitem', { name: /Restore some items/ }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'Restore some items' })
+  fireEvent.change(within(dialog).getByLabelText('Master Password'), { target: { value: 'secret' } })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Open backup' }))
+  await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('list_backup_contents', { path: backup.path, password: 'secret' }))
+
+  const work = await within(dialog).findByRole('region', { name: 'Work' })
+  fireEvent.click(within(work).getByRole('checkbox', { name: /Work/ }))
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Restore 2 items' }))
+
+  await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('restore_from_backup', {
+    path: backup.path, password: 'secret', ids: ['note-1', 'note-2'],
+  }))
+  expect(await within(dialog).findByText('2 items restored.')).toBeInTheDocument()
+})
+
 it('warns that exports are not encrypted and never imports before a file is picked', async () => {
   getTauriInvoke().mockResolvedValue(null)
   render(<PortabilitySettings />)

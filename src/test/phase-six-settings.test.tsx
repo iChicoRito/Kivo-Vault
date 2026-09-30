@@ -1,5 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, expect, it } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { beforeEach, expect, it, vi } from 'vitest'
+
+vi.mock('../lib/feedback', () => ({ notifySuccess: vi.fn(), notifyError: vi.fn() }))
 import { getTauriInvoke } from './setup'
 import EncryptionSettings from '../features/security/EncryptionSettings'
 import BackupSettings from '../features/backup/BackupSettings'
@@ -48,6 +50,34 @@ it('asks for the Master Password and sends it when an app lock exists', async ()
   fireEvent.click(screen.getByRole('button', { name: 'Back up now' }))
   await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('create_backup_now', { folder: null, password: 'secret' }))
   expect(await screen.findByText(/Encrypted, made 2026-09-24/)).toBeInTheDocument()
+})
+
+it('checks vault health, lists problems by kind and repairs one kind', async () => {
+  let fixed = false
+  getTauriInvoke().mockImplementation((command: string) => {
+    if (command === 'read_protection_state') return Promise.resolve({ lockEnabled: false, encryptionEnabled: false })
+    if (command === 'repair_vault_health') { fixed = true; return Promise.resolve(1) }
+    if (command === 'check_vault_health') return Promise.resolve({
+      databaseProblem: null,
+      problems: fixed ? [] : [
+        { kind: 'missing_file', id: 'file-1', label: 'Lease.pdf' },
+        { kind: 'stray_file', id: 'orphan.bin', label: 'orphan.bin' },
+      ],
+      skipped: ['Saved passwords were not checked. Unlock the password vault to include them.'],
+    })
+    return Promise.resolve(null)
+  })
+  render(<BackupSettings />)
+  fireEvent.click(screen.getByRole('button', { name: 'Check vault health' }))
+
+  const dialog = await screen.findByRole('dialog', { name: 'Vault health' })
+  const missing = await within(dialog).findByRole('region', { name: '1 file is missing or changed' })
+  expect(within(missing).getByText('Lease.pdf')).toBeInTheDocument()
+  expect(within(dialog).getByText(/Saved passwords were not checked/)).toBeInTheDocument()
+
+  fireEvent.click(within(missing).getByRole('button', { name: 'Move items to Trash' }))
+  await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('repair_vault_health', { kind: 'missing_file', ids: ['file-1'] }))
+  expect(await within(dialog).findByText(/No problems found/)).toBeInTheDocument()
 })
 
 it('warns that exports are not encrypted and never imports before a file is picked', async () => {

@@ -3,6 +3,7 @@ import { Button, Card, Input, Label, TextField, Typography } from '@heroui/react
 import { createBackupNow, inspectBackup, pickBackupDestination, pickBackupSource, type BackupInfo } from '../../data/backup'
 import { readProtectionState } from '../../data/protection'
 import RestoreDialog from './RestoreDialog'
+import VaultHealthDialog from './VaultHealthDialog'
 
 export default function BackupSettings() {
   const [result, setResult] = useState<BackupInfo | null>(null)
@@ -12,6 +13,7 @@ export default function BackupSettings() {
   // With an app lock, backups are encrypted with the Master Password.
   const [lockEnabled, setLockEnabled] = useState(false)
   const [password, setPassword] = useState('')
+  const [healthOpen, setHealthOpen] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -63,7 +65,7 @@ export default function BackupSettings() {
       <Label>Master Password</Label>
       <Input autoComplete="current-password" />
     </TextField> : null}
-    <div className="flex flex-wrap gap-3"><Button isDisabled={busy} onPress={() => void create(false)}>Back up now</Button><Button isDisabled={busy} variant="secondary" onPress={() => void create(true)}>Back up to folder...</Button><Button isDisabled={busy} variant="secondary" onPress={() => void check()}>Restore from backup</Button></div>
+    <div className="flex flex-wrap gap-3"><Button isDisabled={busy} onPress={() => void create(false)}>Back up now</Button><Button isDisabled={busy} variant="secondary" onPress={() => void create(true)}>Back up to folder...</Button><Button isDisabled={busy} variant="secondary" onPress={() => void check()}>Restore from backup</Button><Button isDisabled={busy} variant="secondary" onPress={() => setHealthOpen(true)}>Check vault health</Button></div>
     {busy ? <Typography role="status" type="body-sm">Working on your backup...</Typography> : null}
     {result ? <div className="grid gap-0.5 rounded-xl bg-(--default) px-4 py-3" role="status">
       <Typography type="body-sm" weight="medium">{result.valid ? 'This backup looks good.' : 'This backup has problems.'} {result.encrypted
@@ -74,5 +76,6 @@ export default function BackupSettings() {
     {result?.problems.map((problem) => <Typography role="alert" className="text-danger" key={problem} type="body-sm">{problem}</Typography>)}
     {error ? <Typography role="alert" className="text-danger" type="body-sm">{error}</Typography> : null}
     <RestoreDialog backup={restore} onClose={() => setRestore(null)} />
+    <VaultHealthDialog open={healthOpen} onClose={() => setHealthOpen(false)} />
   </Card.Content></Card>
 }

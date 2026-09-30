@@ -29,7 +29,7 @@ const UNLOCK_ERROR: &str = "Could not unlock the vault";
 pub struct VaultKeyState(Mutex<Option<[u8; KEY_LENGTH]>>);
 
 impl VaultKeyState {
-    fn require_key(&self) -> Result<[u8; KEY_LENGTH], String> {
+    pub(crate) fn require_key(&self) -> Result<[u8; KEY_LENGTH], String> {
         let guard = self.0.lock().map_err(|_| LOCKED_MESSAGE.to_string())?;
         guard
             .as_ref()
@@ -343,6 +343,36 @@ fn read_credential_versions(
             })
         })
         .collect()
+}
+
+/// Ids of credentials whose sealed data no longer opens with the vault key.
+pub(crate) fn damaged_credential_ids(
+    connection: &Connection,
+    key: &[u8; KEY_LENGTH],
+) -> Result<Vec<String>, String> {
+    let fail = |error: rusqlite::Error| format!("Could not read the credentials: {error}");
+    let mut statement = connection
+        .prepare(
+            "SELECT id, data_nonce, data_ciphertext FROM credentials
+             WHERE data_ciphertext IS NOT NULL AND deleted_at IS NULL",
+        )
+        .map_err(fail)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        })
+        .map_err(fail)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(fail)?;
+    Ok(rows
+        .into_iter()
+        .filter(|(id, nonce, ciphertext)| open_credential(key, id, nonce, ciphertext).is_err())
+        .map(|(id, _, _)| id)
+        .collect())
 }
 
 /// Splits CSV text into records: quoted fields, doubled quotes inside them,
@@ -1087,7 +1117,7 @@ fn write_credentials_favorite(
         .map_err(|error| format!("Could not update the credentials: {error}"))
 }
 
-fn write_credentials_trashed(connection: &mut Connection, ids: &[String]) -> Result<(), String> {
+pub(crate) fn write_credentials_trashed(connection: &mut Connection, ids: &[String]) -> Result<(), String> {
     let transaction = connection
         .transaction()
         .map_err(|error| format!("Could not move the credentials to Trash: {error}"))?;
@@ -2296,6 +2326,23 @@ mod tests {
         let history = versions(&db, &vault, &saved.id);
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].password, "old-pass");
+    }
+
+    #[test]
+    fn health_check_finds_credentials_that_no_longer_open() {
+        let (_workspace, db, vault) = unlocked_vault();
+        save_credential_with_state(&db, &vault, &credential_input("Bank", "one"))
+            .expect("save good");
+        let bad = save_credential_with_state(&db, &vault, &credential_input("Forum", "two"))
+            .expect("save bad");
+        let key = vault.require_key().expect("vault is unlocked");
+        let connection = db.require_connection().expect("lock connection");
+        let connection = connection.as_ref().expect("connection is initialized");
+        connection
+            .execute("UPDATE credentials SET data_ciphertext = x'00' WHERE id = ?1", params![bad.id])
+            .expect("damage credential");
+
+        assert_eq!(damaged_credential_ids(connection, &key).expect("check"), vec![bad.id]);
     }
 
     #[test]

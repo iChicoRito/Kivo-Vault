@@ -1345,7 +1345,7 @@ fn write_items_collection(
         .map_err(|error| format!("Could not move the items: {error}"))
 }
 
-fn write_trashed_items(connection: &mut Connection, ids: &[String]) -> Result<(), String> {
+pub(crate) fn write_trashed_items(connection: &mut Connection, ids: &[String]) -> Result<(), String> {
     if ids.is_empty() {
         return Ok(());
     }

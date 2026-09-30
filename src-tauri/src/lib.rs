@@ -1,6 +1,7 @@
 mod backup;
 mod database;
 mod encryption;
+mod health;
 mod icons;
 mod insights;
 mod passwords;
@@ -139,6 +140,8 @@ pub fn run() {
             passwords::pick_password_csv,
             passwords::preview_password_import,
             passwords::import_credentials,
+            health::check_vault_health,
+            health::repair_vault_health,
             passwords::set_credentials_favorite,
             passwords::trash_credentials,
             passwords::restore_credentials,

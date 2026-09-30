@@ -156,7 +156,7 @@ fn supported_schema(version: i64) -> bool {
     (MIN_SCHEMA..=MAX_SCHEMA).contains(&version)
 }
 
-fn check_db(connection: &Connection) -> Result<(), String> {
+pub(crate) fn check_db(connection: &Connection) -> Result<(), String> {
     let result: String = connection
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .map_err(|e| e.to_string())?;

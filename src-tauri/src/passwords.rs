@@ -1091,14 +1091,58 @@ pub fn reset_vault(
     result
 }
 
-/// Copies a password like normal text, so it stays on the clipboard and shows
-/// in Win+V. Done in Rust because the webview cannot write the clipboard while
-/// Kivo is unfocused.
+/// Copies a password. By default it is copied like normal text, so it stays on
+/// the clipboard and shows in Win+V. The clipboard preferences can keep it out
+/// of Win+V history and clear it after a delay, but only if the clipboard still
+/// holds it, so anything the user copied since is kept. Done in Rust because
+/// the webview cannot write the clipboard while Kivo is unfocused.
 #[tauri::command]
-pub fn copy_secret(text: String) -> Result<(), String> {
-    arboard::Clipboard::new()
-        .and_then(|mut clipboard| clipboard.set_text(text))
-        .map_err(|_| "Could not copy to the clipboard".to_string())
+pub fn copy_secret(text: String, db: State<'_, DatabaseState>) -> Result<(), String> {
+    let (clear_seconds, exclude_history) = {
+        let connection = db.require_connection()?;
+        let preferences =
+            crate::database::read_preferences(connection.as_ref().expect("checked above"))
+                .map_err(|error| format!("Could not read preferences: {error}"))?;
+        (
+            preferences.clipboard_clear_seconds,
+            preferences.clipboard_exclude_history,
+        )
+    };
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|_| "Could not copy to the clipboard".to_string())?;
+
+    #[cfg(windows)]
+    let written = if exclude_history {
+        use arboard::SetExtWindows;
+        clipboard
+            .set()
+            .exclude_from_history()
+            .exclude_from_cloud()
+            .text(text.as_str())
+    } else {
+        clipboard.set_text(text.as_str())
+    };
+    #[cfg(not(windows))]
+    let written = {
+        let _ = exclude_history;
+        clipboard.set_text(text.as_str())
+    };
+
+    written.map_err(|_| "Could not copy to the clipboard".to_string())?;
+
+    if clear_seconds > 0 {
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(clear_seconds as u64));
+
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                if clipboard.get_text().is_ok_and(|current| current == text) {
+                    let _ = clipboard.clear();
+                }
+            }
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

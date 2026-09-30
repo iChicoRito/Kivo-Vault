@@ -30,6 +30,8 @@ export type Preferences = {
   semanticSearch: boolean
   autoTag: boolean
   summaries: boolean
+  clipboardClearSeconds: number
+  clipboardExcludeHistory: boolean
 }
 
 export async function loadProfile(): Promise<Profile> {

@@ -69,6 +69,8 @@ const DEFAULT_PREFERENCES: Preferences = {
   semanticSearch: false,
   autoTag: false,
   summaries: false,
+  clipboardClearSeconds: 0,
+  clipboardExcludeHistory: false,
 }
 
 function createDefaultState(): BrowserPreviewState {

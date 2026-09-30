@@ -29,6 +29,8 @@ const PREFERENCES = {
   semanticSearch: false,
   autoTag: false,
   summaries: false,
+  clipboardClearSeconds: 0,
+  clipboardExcludeHistory: false,
 } as const
 
 beforeEach(() => {

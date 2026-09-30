@@ -41,6 +41,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   semanticSearch: false,
   autoTag: false,
   summaries: false,
+  clipboardClearSeconds: 0,
+  clipboardExcludeHistory: false,
 }
 
 const FALLBACK_PREFERENCES: PreferencesContextValue = {
@@ -110,6 +112,10 @@ function normalizePreferences(value: Preferences | null | undefined): Preference
     semanticSearch: value?.semanticSearch ?? DEFAULT_PREFERENCES.semanticSearch,
     autoTag: value?.autoTag ?? DEFAULT_PREFERENCES.autoTag,
     summaries: value?.summaries ?? DEFAULT_PREFERENCES.summaries,
+    clipboardClearSeconds: [0, 30, 60, 120].includes(value?.clipboardClearSeconds ?? 0)
+      ? value?.clipboardClearSeconds ?? 0
+      : 0,
+    clipboardExcludeHistory: value?.clipboardExcludeHistory ?? DEFAULT_PREFERENCES.clipboardExcludeHistory,
   }
 }
 

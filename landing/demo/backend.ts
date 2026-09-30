@@ -83,6 +83,8 @@ export async function resetDemoBackend(theme: 'light' | 'dark' = 'dark') {
     semanticSearch: false,
     autoTag: false,
     summaries: false,
+    clipboardClearSeconds: 0,
+    clipboardExcludeHistory: false,
   }
 
   const move = collection('Moving house', 'home', 0)

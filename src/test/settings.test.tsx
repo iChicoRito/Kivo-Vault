@@ -86,6 +86,8 @@ const PREFERENCES: Preferences = {
   semanticSearch: false,
   autoTag: false,
   summaries: false,
+  clipboardClearSeconds: 0,
+  clipboardExcludeHistory: false,
 }
 
 const RESET_PREFERENCES: Preferences = {
@@ -100,6 +102,8 @@ const RESET_PREFERENCES: Preferences = {
   semanticSearch: false,
   autoTag: false,
   summaries: false,
+  clipboardClearSeconds: 0,
+  clipboardExcludeHistory: false,
 }
 
 const NATIVE_SAVE_ERROR = 'Kivo could not change whether it opens when you sign in.'
@@ -520,6 +524,33 @@ describe('app lock', () => {
     expect(screen.getAllByLabelText('Master Password')).toHaveLength(1)
     expect(screen.getAllByLabelText('Confirm Master Password')).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: 'Turn on app lock' })).toHaveLength(1)
+  })
+})
+
+describe('copied passwords', () => {
+  it('starts with clearing off and saves a new delay and the history switch', async () => {
+    await renderSettings()
+    await openTab('Security')
+    await screen.findByRole('heading', { level: 2, name: 'Copied passwords' })
+
+    expect(screen.getByRole('radio', { name: /Never/ })).toBeChecked()
+    expect(
+      screen.getByRole('switch', { name: 'Keep copied passwords out of clipboard history' }),
+    ).not.toBeChecked()
+
+    fireEvent.click(screen.getByRole('radio', { name: /30 sec/ }))
+    await waitFor(() =>
+      expect(settingsMock.savePreferences).toHaveBeenLastCalledWith(
+        expect.objectContaining({ clipboardClearSeconds: 30 }),
+      ),
+    )
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Keep copied passwords out of clipboard history' }))
+    await waitFor(() =>
+      expect(settingsMock.savePreferences).toHaveBeenLastCalledWith(
+        expect.objectContaining({ clipboardExcludeHistory: true }),
+      ),
+    )
   })
 })
 

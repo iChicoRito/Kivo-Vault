@@ -42,6 +42,7 @@ import { cn } from '../../lib/utils'
 import { listIndexState, type IndexState } from '../../data/indexing'
 import { reindexItems } from '../../data/insights'
 import AppLockSettings from '../security/AppLockSettings'
+import ClipboardSettings from '../security/ClipboardSettings'
 import EncryptionSettings from '../security/EncryptionSettings'
 import BackupSettings from '../backup/BackupSettings'
 import DangerZoneSettings from './DangerZoneSettings'
@@ -869,6 +870,7 @@ export default function SettingsPage() {
         <Tabs.Panel className="grid gap-5 pt-5" id="security">
           <AppLockSettings />
           <EncryptionSettings />
+          <ClipboardSettings />
         </Tabs.Panel>
 
         <Tabs.Panel className="grid gap-5 pt-5" id="data">

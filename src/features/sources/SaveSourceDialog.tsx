@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Button,
   FieldError,
@@ -6,6 +6,7 @@ import {
   Label,
   Modal,
   Skeleton,
+  Switch,
   TextField,
   Typography,
 } from '@heroui/react'
@@ -13,6 +14,7 @@ import { Link01Icon } from '@hugeicons/core-free-icons'
 
 import { notifyError, notifySuccess } from '../../lib/feedback'
 import { loadItem, saveItem, type VaultItem } from '../../data/items'
+import { fetchLinkDetails, type LinkDetails } from '../../data/linkDetails'
 import { DialogHeader } from '../../components/DialogHeader'
 
 const ADDRESS_REQUIRED = 'Address is required.'
@@ -20,6 +22,25 @@ const ADDRESS_INVALID = 'Address must start with http:// or https://.'
 const TITLE_REQUIRED = 'Title is required.'
 const SAVE_ERROR = 'Kivo could not save this source. Try again.'
 const LOAD_ERROR = 'Kivo could not load this source.'
+const DETAILS_ERROR = 'Kivo could not fetch details for this link. You can type them yourself.'
+const DETAILS_DELAY_MS = 400
+
+// ponytail: remembered for this session only; phase 3 moves it into saved preferences.
+let fetchDetailsSetting = true
+
+function isWebAddress(value: string) {
+  try {
+    const url = new URL(value)
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname.includes('.')
+  } catch {
+    return false
+  }
+}
+
+// A field can take fetched text while it is empty or still holds what Kivo filled in.
+function canFill(current: string, filled: string | null) {
+  return current.trim() === '' || current === filled
+}
 
 type FieldErrors = {
   address?: string
@@ -42,12 +63,36 @@ export function SaveSourceDialog({ open, onClose, itemId, onSaved }: SaveSourceD
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(false)
   const [loaded, setLoaded] = useState<VaultItem | null>(null)
+  const [autoFetch, setAutoFetch] = useState(fetchDetailsSetting)
+  const [detailsStatus, setDetailsStatus] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [retryCount, setRetryCount] = useState(0)
+  // Each address change, close, or save starts a new generation; older answers are dropped.
+  const generation = useRef(0)
+  const detailsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const addressTouched = useRef(false)
+  const filled = useRef<{ title: string | null; description: string | null }>({
+    title: null,
+    description: null,
+  })
+  const latest = useRef({ title, description })
+  latest.current = { title, description }
+
+  function cancelDetails() {
+    generation.current += 1
+    if (detailsTimer.current) clearTimeout(detailsTimer.current)
+    detailsTimer.current = null
+    setDetailsStatus('idle')
+  }
 
   useEffect(() => {
+    generation.current += 1
     if (!open) return
 
     setErrors({})
     setFormError(null)
+    setDetailsStatus('idle')
+    addressTouched.current = false
+    filled.current = { title: null, description: null }
 
     if (!itemId) {
       setLoading(false)
@@ -81,6 +126,46 @@ export function SaveSourceDialog({ open, onClose, itemId, onSaved }: SaveSourceD
     }
   }, [open, itemId])
 
+  useEffect(() => {
+    const url = address.trim()
+    if (!open || !autoFetch || !addressTouched.current || !isWebAddress(url)) return
+
+    const request = ++generation.current
+    detailsTimer.current = setTimeout(() => {
+      detailsTimer.current = null
+      setDetailsStatus('loading')
+      fetchLinkDetails(url)
+        .then((details) => {
+          if (generation.current !== request) return
+          applyDetails(details)
+          setDetailsStatus('idle')
+        })
+        .catch(() => {
+          if (generation.current === request) setDetailsStatus('error')
+        })
+    }, DETAILS_DELAY_MS)
+
+    return () => {
+      if (detailsTimer.current) clearTimeout(detailsTimer.current)
+      detailsTimer.current = null
+    }
+  }, [open, autoFetch, address, retryCount])
+
+  function applyDetails(details: LinkDetails) {
+    if (details.title !== null && canFill(latest.current.title, filled.current.title)) {
+      filled.current.title = details.title
+      setTitle(details.title)
+      setErrors((current) => ({ ...current, title: undefined }))
+    }
+    if (
+      details.description !== null &&
+      canFill(latest.current.description, filled.current.description)
+    ) {
+      filled.current.description = details.description
+      setDescription(details.description)
+    }
+  }
+
   function validate() {
     const next: FieldErrors = {}
     const addressValue = address.trim()
@@ -98,6 +183,8 @@ export function SaveSourceDialog({ open, onClose, itemId, onSaved }: SaveSourceD
     setFormError(null)
     if (!validate()) return
 
+    // What the user sees now is what gets saved; a late answer must not change it.
+    cancelDetails()
     setBusy(true)
 
     try {
@@ -171,6 +258,8 @@ export function SaveSourceDialog({ open, onClose, itemId, onSaved }: SaveSourceD
                     type="url"
                     value={address}
                     onChange={(value) => {
+                      addressTouched.current = true
+                      setDetailsStatus('idle')
                       setAddress(value)
                       setErrors((current) => ({ ...current, address: undefined }))
                     }}
@@ -179,6 +268,26 @@ export function SaveSourceDialog({ open, onClose, itemId, onSaved }: SaveSourceD
                     <Input fullWidth placeholder="https://example.com" variant="secondary" />
                     {errors.address ? <FieldError>{errors.address}</FieldError> : null}
                   </TextField>
+
+                  {detailsStatus === 'loading' ? (
+                    <Typography className="text-muted" role="status" type="body-sm">
+                      Fetching link details...
+                    </Typography>
+                  ) : null}
+                  {detailsStatus === 'error' ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Typography className="text-muted" role="status" type="body-sm">
+                        {DETAILS_ERROR}
+                      </Typography>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onPress={() => setRetryCount((count) => count + 1)}
+                      >
+                        Retry
+                      </Button>
+                    </div>
+                  ) : null}
 
                   <TextField
                     isRequired
@@ -198,6 +307,30 @@ export function SaveSourceDialog({ open, onClose, itemId, onSaved }: SaveSourceD
                     <Label>Description</Label>
                     <Input fullWidth variant="secondary" />
                   </TextField>
+
+                  <div className="grid gap-1">
+                    <Switch
+                      aria-describedby="source-link-details-hint"
+                      className="w-full"
+                      isSelected={autoFetch}
+                      onChange={(enabled) => {
+                        fetchDetailsSetting = enabled
+                        setAutoFetch(enabled)
+                        if (!enabled) cancelDetails()
+                      }}
+                    >
+                      <Switch.Content className="w-full justify-between">
+                        <span className="font-medium">Fetch link details automatically</span>
+                        <Switch.Control>
+                          <Switch.Thumb />
+                        </Switch.Control>
+                      </Switch.Content>
+                    </Switch>
+                    <Typography className="text-muted" id="source-link-details-hint" type="body-sm">
+                      Pasting a link contacts that website to read its title and description. No
+                      cookies or logins are sent.
+                    </Typography>
+                  </div>
                 </form>
               )}
 

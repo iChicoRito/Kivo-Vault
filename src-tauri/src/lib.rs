@@ -4,6 +4,7 @@ mod encryption;
 mod health;
 mod icons;
 mod insights;
+mod link_details;
 mod passwords;
 mod portability;
 mod security;
@@ -129,6 +130,7 @@ pub fn run() {
             insights::suggest_tags,
             insights::summarize_item,
             icons::credential_icon,
+            link_details::fetch_link_details,
             passwords::vault_status,
             passwords::setup_vault,
             passwords::unlock_vault,

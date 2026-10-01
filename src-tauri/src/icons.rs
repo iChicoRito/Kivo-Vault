@@ -56,7 +56,7 @@ fn client() -> Result<Client, String> {
 /// True for addresses on the open internet. Loopback, private, link-local,
 /// shared (CGNAT), multicast and unspecified addresses are refused so a saved
 /// site can never make Kivo talk to the user's own machine or network.
-fn is_public(ip: IpAddr) -> bool {
+pub(crate) fn is_public(ip: IpAddr) -> bool {
     let ip = match ip {
         IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
             Some(v4) => IpAddr::V4(v4),
@@ -92,10 +92,16 @@ fn is_ip_literal(host: &str) -> bool {
     host.trim_matches(['[', ']']).parse::<IpAddr>().is_ok()
 }
 
+/// Keeps only public addresses, so a name with mixed public and private
+/// answers can only ever connect to the public ones.
+pub(crate) fn public_addrs(addrs: impl Iterator<Item = SocketAddr>) -> Vec<SocketAddr> {
+    addrs.filter(|addr| is_public(addr.ip())).collect()
+}
+
 /// Resolves names like the system does, then drops every non-public address.
 /// Every request goes through it, including redirects and icon links on other
 /// hosts, so a name that points at 127.0.0.1 is refused at connect time.
-struct PublicResolver;
+pub(crate) struct PublicResolver;
 
 impl Resolve for PublicResolver {
     fn resolve(&self, name: Name) -> Resolving {
@@ -104,10 +110,7 @@ impl Resolve for PublicResolver {
         // ponytail: blocking lookup on reqwest's own runtime thread; each icon
         // fetch builds its own client, so only that fetch waits.
         Box::pin(async move {
-            let addrs: Vec<SocketAddr> = (host.as_str(), 0)
-                .to_socket_addrs()?
-                .filter(|addr| is_public(addr.ip()))
-                .collect();
+            let addrs = public_addrs((host.as_str(), 0).to_socket_addrs()?);
 
             if addrs.is_empty() {
                 return Err("The site has no public address".into());

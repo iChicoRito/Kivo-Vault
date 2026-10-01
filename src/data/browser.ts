@@ -142,6 +142,8 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
     case 'list_backup_contents':
     case 'restore_from_backup':
     case 'index_file':
+    // Link details go through the Rust safety checks only; the preview never fetches sites itself.
+    case 'fetch_link_details':
       throw new Error('This action needs the Kivo desktop app.')
     case 'initialize_database':
       return undefined as T

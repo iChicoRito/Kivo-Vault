@@ -260,6 +260,16 @@ function UnlockVaultDialog() {
             <HugeiconsIcon aria-hidden="true" icon={SquareLock01Icon} size={18} />
             Unlock
           </Button>
+          {notice ? (
+            <Typography role="status" type="body">
+              {notice}
+            </Typography>
+          ) : null}
+          {recoveryEnabled ? (
+            <Button variant="ghost" onPress={() => setRecovering(true)}>
+              Forgot it? Use recovery kit
+            </Button>
+          ) : null}
         </section>
       )}
 

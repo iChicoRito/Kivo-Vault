@@ -125,6 +125,20 @@ describe('PasswordsPage vault gate', () => {
     expect(within(dialog).getByLabelText('Master Password')).toBeInTheDocument()
   })
 
+  it('offers the recovery kit in the unlock dialog and after it is closed', async () => {
+    unlockedPage(true, false)
+    stub('read_recovery_status', ({ scope }) => ({ scope, available: true, enabled: true }))
+
+    renderPasswords()
+
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByRole('button', { name: 'Forgot it? Use recovery kit' })).toBeInTheDocument()
+
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Forgot it? Use recovery kit' })).toBeInTheDocument()
+  })
+
   it('shows the unlock failure and keeps the typed password', async () => {
     unlockedPage(true, false)
     stub('unlock_vault', () => {

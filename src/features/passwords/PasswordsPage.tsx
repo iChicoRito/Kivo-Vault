@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Card,
+  Dropdown,
   EmptyState,
   Input,
   Label,
@@ -12,6 +13,7 @@ import {
   Typography,
 } from '@heroui/react'
 import {
+  ArrowDown01Icon,
   ArrowLeft01Icon,
   Delete02Icon,
   FileImportIcon,
@@ -203,17 +205,35 @@ function PasswordsPageContent() {
         </TextField>
 
         <div className="flex flex-wrap items-center gap-2" data-tour="passwords">
-          <Button isDisabled={locking} variant="secondary" onPress={() => void handleLock()}>
-            <HugeiconsIcon aria-hidden="true" icon={SquareLock01Icon} size={18} />
-            {locking ? 'Locking...' : 'Lock Vault'}
-          </Button>
-          <Button variant="secondary" onPress={() => setChangeOpen(true)}>
-            Change Password
-          </Button>
-          <Button variant="secondary" onPress={() => setImportOpen(true)}>
-            <HugeiconsIcon aria-hidden="true" icon={FileImportIcon} size={18} />
-            Import
-          </Button>
+          <Dropdown>
+            <Button isDisabled={locking} variant="secondary">
+              {locking ? 'Locking...' : 'Vault'}
+              <HugeiconsIcon aria-hidden="true" icon={ArrowDown01Icon} size={16} />
+            </Button>
+            <Dropdown.Popover className="min-w-48" placement="bottom end">
+              <Dropdown.Menu
+                aria-label="Vault actions"
+                onAction={(key) => {
+                  if (key === 'lock') void handleLock()
+                  else if (key === 'change') setChangeOpen(true)
+                  else if (key === 'import') setImportOpen(true)
+                }}
+              >
+                <Dropdown.Item id="lock" textValue="Lock vault">
+                  <HugeiconsIcon aria-hidden="true" icon={SquareLock01Icon} size={16} />
+                  <Label>Lock vault</Label>
+                </Dropdown.Item>
+                <Dropdown.Item id="change" textValue="Change password">
+                  <HugeiconsIcon aria-hidden="true" icon={Shield01Icon} size={16} />
+                  <Label>Change password</Label>
+                </Dropdown.Item>
+                <Dropdown.Item id="import" textValue="Import passwords">
+                  <HugeiconsIcon aria-hidden="true" icon={FileImportIcon} size={16} />
+                  <Label>Import passwords</Label>
+                </Dropdown.Item>
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
           <Button onPress={openCreate}>
             <HugeiconsIcon aria-hidden="true" icon={PlusSignIcon} size={18} />
             New Password

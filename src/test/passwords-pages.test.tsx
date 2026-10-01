@@ -230,6 +230,23 @@ describe('PasswordsPage vault gate', () => {
   })
 })
 
+describe('PasswordsPage vault menu', () => {
+  it('keeps New Password as a button and puts lock, change password and import in the Vault menu', async () => {
+    stub('lock_vault', () => ({ configured: true, unlocked: false }))
+    renderPasswords()
+
+    expect(await screen.findByRole('button', { name: 'New Password' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Lock Vault' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Vault' }))
+    expect(await screen.findByRole('menuitem', { name: 'Change password' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Import passwords' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Lock vault' }))
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('lock_vault'))
+  })
+})
+
 describe('PasswordsPage list', () => {
   it('lists services, usernames and monogram avatars', async () => {
     stub('list_credentials', () => [
@@ -415,7 +432,8 @@ describe('PasswordsPage row actions', () => {
     renderPasswords()
     await screen.findByText('GitHub')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Import' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Vault' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Import passwords' }))
     const dialog = await screen.findByRole('dialog', { name: 'Import passwords' })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Choose file...' }))
 

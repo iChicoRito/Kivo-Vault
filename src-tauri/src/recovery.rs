@@ -126,7 +126,10 @@ pub(crate) fn parse_kit(input: &str) -> Result<Kit, String> {
 
 fn available(connection: &Connection, scope: VaultScope) -> Result<bool, String> {
     match scope {
-        VaultScope::Content => encryption::is_enabled(connection),
+        // Encrypted content, or an app lock on its own (then a kit resets the app-lock password).
+        VaultScope::Content => Ok(encryption::is_enabled(connection)?
+            || crate::database::has_stored_password_lock(connection)
+                .map_err(|error| format!("Could not read app lock: {error}"))?),
         VaultScope::Passwords => passwords::vault_configured(connection)
             .map_err(|error| format!("Could not read the password vault: {error}")),
     }
@@ -136,12 +139,10 @@ fn available(connection: &Connection, scope: VaultScope) -> Result<bool, String>
 /// password is `Err(WRONG_PASSWORD)`.
 fn authenticate(connection: &mut Connection, scope: VaultScope, password: &str) -> Result<DataKey, String> {
     match scope {
-        VaultScope::Content => {
-            if !encryption::is_enabled(connection)? {
-                return Err("Turn on encryption before setting up a recovery kit.".to_string());
-            }
+        VaultScope::Content if encryption::is_enabled(connection)? => {
             encryption::unlock(connection, password)?.ok_or_else(|| WRONG_PASSWORD.to_string())
         }
+        VaultScope::Content => authenticate_app_lock(connection, password),
         VaultScope::Passwords => passwords::authenticate_vault_password(connection, password).map_err(|error| {
             if error == "Could not unlock the vault" {
                 WRONG_PASSWORD.to_string()
@@ -150,6 +151,30 @@ fn authenticate(connection: &mut Connection, scope: VaultScope, password: &str) 
             }
         }),
     }
+}
+
+/// App lock without encryption has no data key, so a random "lock key" behind
+/// the same slots stands in for it. A kit then only lets you set a new app-lock
+/// password; nothing is encrypted, so there is nothing else for it to open.
+/// Turning encryption on later replaces this identity and its kit.
+fn authenticate_app_lock(connection: &Connection, password: &str) -> Result<DataKey, String> {
+    let verifier = crate::database::read_password_verifier(connection)
+        .map_err(|error| format!("Could not read app lock: {error}"))?
+        .ok_or_else(|| "Set a Master Password (App lock) before setting up a recovery kit.".to_string())?;
+    if !crate::security::secret_matches(password, &verifier) {
+        return Err(WRONG_PASSWORD.to_string());
+    }
+    if key_slots::has_slots(connection, VaultScope::Content)? {
+        if let Ok(Some(key)) = key_slots::unlock_with_password(connection, VaultScope::Content, password) {
+            return Ok(key);
+        }
+    }
+    // First kit, or slots out of step with the app-lock password: start fresh.
+    let key = new_vault_key()?;
+    let tx = connection.unchecked_transaction().map_err(|error| error.to_string())?;
+    key_slots::install_password_slot(&tx, VaultScope::Content, &key, password)?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(key)
 }
 
 /// Counts a wrong password or kit toward the shared wrong-try wait.
@@ -749,5 +774,78 @@ mod tests {
         assert!(name.ends_with(".txt"));
         cancel_with_state(&db, &draft.token).unwrap();
         assert!(kit_file(&db, &draft.token).is_err(), "cancel drops the setup");
+    }
+
+    // ---- App lock without encryption ----
+
+    /// App lock (Master Password) on, encryption off.
+    fn app_lock_only(label: &str) -> (Temp, DatabaseState, VaultKeyState) {
+        let temp = Temp::new(label);
+        let db = temp.state();
+        {
+            let mut guard = db.require_connection().unwrap();
+            crate::database::write_password_verifier(guard.as_mut().unwrap(), &crate::security::hash_secret(CONTENT_PW).unwrap())
+                .unwrap();
+        }
+        (temp, db, VaultKeyState::default())
+    }
+
+    fn app_lock_matches(db: &DatabaseState, password: &str) -> bool {
+        let guard = db.require_connection().unwrap();
+        let verifier = crate::database::read_password_verifier(guard.as_ref().unwrap()).unwrap().unwrap();
+        crate::security::secret_matches(password, &verifier)
+    }
+
+    #[test]
+    fn an_app_lock_alone_can_have_a_kit_that_sets_a_new_master_password() {
+        let (_temp, db, vault) = app_lock_only("applock");
+        assert!(read_status_with_state(&db, "content").unwrap().available);
+        assert_eq!(begin_with_state(&db, "content", "wrong").err().as_deref(), Some(WRONG_PASSWORD));
+
+        let kit = enroll(&db, "content", CONTENT_PW);
+        assert!(enabled(&db, "content"));
+
+        recover_with_state(&db, &vault, "content", &kit, "my new master password").unwrap();
+        assert!(app_lock_matches(&db, "my new master password"));
+        assert!(!app_lock_matches(&db, CONTENT_PW));
+        assert!(enabled(&db, "content"), "the kit keeps working");
+
+        // A normal password change keeps the kit in step.
+        {
+            let mut guard = db.require_connection().unwrap();
+            encryption::change_password(guard.as_mut().unwrap(), "my new master password", "third password").unwrap();
+        }
+        assert!(enabled(&db, "content"));
+        recover_with_state(&db, &vault, "content", &kit, "fourth password").unwrap();
+        assert!(app_lock_matches(&db, "fourth password"));
+    }
+
+    #[test]
+    fn an_app_lock_kit_retires_when_the_lock_is_replaced_removed_or_encryption_starts() {
+        let (_temp, db, vault) = app_lock_only("applock-retire");
+        enroll(&db, "content", CONTENT_PW);
+        {
+            let mut guard = db.require_connection().unwrap();
+            crate::database::write_password_verifier(guard.as_mut().unwrap(), &crate::security::hash_secret("set again").unwrap())
+                .unwrap();
+        }
+        assert!(!enabled(&db, "content"), "a newly set app-lock password retires the kit");
+
+        let kit = enroll(&db, "content", "set again");
+        {
+            let mut guard = db.require_connection().unwrap();
+            encryption::enable(guard.as_mut().unwrap(), db.files_dir(), "set again").unwrap();
+        }
+        assert!(!enabled(&db, "content"), "encryption replaces the app-lock kit");
+        assert!(recover_with_state(&db, &vault, "content", &kit, "new password").is_err());
+        assert!(content_unlock(&db, "set again").is_some(), "the encrypted vault opens normally");
+
+        let (_temp2, other, _vault2) = app_lock_only("applock-remove");
+        enroll(&other, "content", CONTENT_PW);
+        {
+            let mut guard = other.require_connection().unwrap();
+            crate::database::clear_password_verifier(guard.as_mut().unwrap()).unwrap();
+        }
+        assert!(!read_status_with_state(&other, "content").unwrap().available);
     }
 }

@@ -955,6 +955,17 @@ pub fn change_password(
     tx.execute("UPDATE security SET password_verifier=?1,encryption_salt=NULL,wrapped_key=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=1", params![verifier]).map_err(|error| error.to_string())?;
     if let Some(key) = key.as_ref() {
         key_slots::replace_password_slot(&tx, VaultScope::Content, key, next)?;
+    } else if key_slots::has_slots(&tx, VaultScope::Content)? {
+        // App lock without encryption: its recovery kit's slots follow the new
+        // password. If they cannot be opened, the kit is retired instead.
+        match key_slots::unlock_with_password(&tx, VaultScope::Content, current) {
+            Ok(Some(mut lock_key)) => {
+                let replaced = key_slots::replace_password_slot(&tx, VaultScope::Content, &lock_key, next);
+                lock_key.fill(0);
+                replaced?;
+            }
+            _ => key_slots::remove_scope(&tx, VaultScope::Content)?,
+        }
     }
     tx.commit().map_err(|error| error.to_string())
 }

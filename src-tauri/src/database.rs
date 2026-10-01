@@ -955,8 +955,17 @@ pub fn write_password_verifier(
            updated_at = excluded.updated_at",
         params![verifier],
     )?;
+    retire_app_lock_kit(&transaction)?;
 
     transaction.commit()
+}
+
+/// While encryption is off, the content vault's key slots only back an
+/// app-lock recovery kit. A new or removed app-lock password retires it.
+fn retire_app_lock_kit(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute("DELETE FROM vault_key_slots WHERE scope = 'content'", [])?;
+    connection.execute("DELETE FROM vault_keys WHERE scope = 'content'", [])?;
+    Ok(())
 }
 
 pub fn clear_password_verifier(connection: &mut Connection) -> rusqlite::Result<()> {
@@ -970,6 +979,7 @@ pub fn clear_password_verifier(connection: &mut Connection) -> rusqlite::Result<
          WHERE id = 1",
         [],
     )?;
+    retire_app_lock_kit(&transaction)?;
 
     transaction.commit()
 }

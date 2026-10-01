@@ -37,7 +37,7 @@ describe('RecoverySettings', () => {
     backend(status({ available: false, enabled: false }, { available: true, enabled: true }))
     render(<RecoverySettings />)
 
-    expect(await screen.findByText(/Turn on encryption first/)).toBeInTheDocument()
+    expect(await screen.findByText(/Set a Master Password in App lock first/)).toBeInTheDocument()
     expect(screen.getByText('Kit active')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Replace kit' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Turn off' })).toBeInTheDocument()

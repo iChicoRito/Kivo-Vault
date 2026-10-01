@@ -325,6 +325,10 @@ pub fn install_password_slot(
     let envelope = wrap_with_password(&identity, &slot_id, data_key, password)?;
     let check = make_key_check(&identity, data_key)?;
     let fail = |error: rusqlite::Error| format!("Could not save the vault keys: {error}");
+    // A new identity starts with no slots: an older recovery kit never carries over.
+    connection
+        .execute("DELETE FROM vault_key_slots WHERE scope = ?1", params![scope.as_str()])
+        .map_err(fail)?;
     connection
         .execute("DELETE FROM vault_keys WHERE scope = ?1", params![scope.as_str()])
         .map_err(fail)?;
@@ -402,10 +406,14 @@ pub fn remove_recovery_slot(connection: &Connection, scope: VaultScope) -> Resul
 
 /// Removes a vault's identity and every slot (they cascade).
 pub fn remove_scope(connection: &Connection, scope: VaultScope) -> Result<(), String> {
+    let fail = |error: rusqlite::Error| format!("Could not remove the vault keys: {error}");
+    connection
+        .execute("DELETE FROM vault_key_slots WHERE scope = ?1", params![scope.as_str()])
+        .map_err(fail)?;
     connection
         .execute("DELETE FROM vault_keys WHERE scope = ?1", params![scope.as_str()])
         .map(|_| ())
-        .map_err(|error| format!("Could not remove the vault keys: {error}"))
+        .map_err(fail)
 }
 
 #[cfg(test)]

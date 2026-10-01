@@ -7,9 +7,10 @@ import { RecoveryDialog, type RecoveryMode } from './RecoveryDialog'
 const ROWS: Array<{ scope: VaultScope; title: string; detail: string; unavailable: string }> = [
   {
     scope: 'content',
-    title: 'Content vault',
-    detail: 'Notes, sources and files. Replaces a forgotten Master Password.',
-    unavailable: 'Turn on encryption first. Without encryption, the Master Password only locks the app.',
+    title: 'Master Password',
+    detail:
+      'Replaces a forgotten Master Password, with or without encryption. If you turn encryption on or off later, set the kit up again.',
+    unavailable: 'Set a Master Password in App lock first.',
   },
   {
     scope: 'passwords',

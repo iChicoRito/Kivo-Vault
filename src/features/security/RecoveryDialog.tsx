@@ -28,7 +28,7 @@ type RecoveryDialogProps = {
 }
 
 const VAULT_NAME: Record<VaultScope, string> = {
-  content: 'content vault',
+  content: 'Master Password',
   passwords: 'password vault',
 }
 
@@ -147,7 +147,9 @@ export function RecoveryDialog({ mode, scope, onClose, onDone }: RecoveryDialogP
       ? 'A recovery kit lets you set a new password if you forget this one. Keep it away from this computer and your backups.'
       : mode === 'disable'
         ? 'The current kit stops working for this vault. Backups made while it was active may still open with it.'
-        : `Set a new password for the ${VAULT_NAME[scope]}. Your data stays as it is.`
+        : scope === 'content'
+          ? 'Set a new Master Password. Your data stays as it is.'
+          : 'Set a new password for the password vault. Your data stays as it is.'
   const primary =
     mode === 'setup'
       ? draft

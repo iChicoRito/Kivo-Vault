@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use tauri::State;
 
 use crate::database::{self, DatabaseState};
+use crate::key_slots::{self, VaultScope};
 use crate::security::{hash_secret, secret_matches};
 
 const KEY_LEN: usize = 32;
@@ -51,6 +52,10 @@ impl ContentKeyState {
     }
 }
 
+/// The older (pre-slot) wrapper. Only tests write it, to build vaults that
+/// need the upgrade; the app only reads it.
+#[cfg(test)]
+#[allow(dead_code)]
 pub struct WrappedVaultKey {
     pub salt: Vec<u8>,
     pub wrapped: Vec<u8>,
@@ -117,6 +122,8 @@ pub fn decrypt_bytes(key: &[u8; KEY_LEN], stored: &[u8], aad: &[u8]) -> Result<V
         .map_err(|_| "Could not read protected data".to_string())
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn wrap_vault_key(key: &[u8; KEY_LEN], password: &str) -> Result<WrappedVaultKey, String> {
     if password.trim().is_empty() {
         return Err("Password is required".to_string());
@@ -493,12 +500,24 @@ fn verifier_matches(connection: &Connection, password: &str) -> Result<bool, Str
         .is_some_and(|hash| secret_matches(password, &hash)))
 }
 
+const DAMAGED_UNLOCK: &str = "The saved unlock data for this vault is damaged";
+
+/// Opens the content data key with the Master Password. A vault on v1 key
+/// slots opens only through its slot; if that slot is damaged it fails rather
+/// than falling back to an older wrapper. A vault still on the older format is
+/// opened that way once, then moved to a v1 slot around the same data key.
 pub fn unlock(connection: &Connection, password: &str) -> Result<Option<[u8; 32]>, String> {
     if !verifier_matches(connection, password)? {
         return Ok(None);
     }
     if !is_enabled(connection)? {
         return Ok(None);
+    }
+    if key_slots::has_slots(connection, VaultScope::Content)? {
+        // The verifier already accepted this password, so a slot that does not open is damage.
+        return key_slots::unlock_with_password(connection, VaultScope::Content, password)?
+            .map(Some)
+            .ok_or_else(|| DAMAGED_UNLOCK.to_string());
     }
     let (salt, wrapped): (Vec<u8>, Vec<u8>) = connection
         .query_row(
@@ -507,7 +526,26 @@ pub fn unlock(connection: &Connection, password: &str) -> Result<Option<[u8; 32]
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .map_err(|_| "Could not unlock protected data".to_string())?;
-    unwrap_vault_key(&salt, &wrapped, password).map(Some)
+    let key = unwrap_vault_key(&salt, &wrapped, password)?;
+    // If the move fails it rolls back and the older wrapper still works next time.
+    let _ = upgrade_legacy_content(connection, &key, password);
+    Ok(Some(key))
+}
+
+/// Moves an older vault to a v1 password slot around its existing data key, in
+/// one transaction, and retires the older wrapper so there is one route only.
+/// Item, version and file ciphertext do not change.
+fn upgrade_legacy_content(connection: &Connection, key: &[u8; 32], password: &str) -> Result<(), String> {
+    let tx = connection
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    key_slots::install_password_slot(&tx, VaultScope::Content, key, password)?;
+    tx.execute(
+        "UPDATE security SET encryption_salt=NULL, wrapped_key=NULL WHERE id=1",
+        [],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())
 }
 
 /// Where decrypted copies of encrypted files go when the user opens them.
@@ -699,7 +737,6 @@ pub fn enable(
         return Err("Incorrect Master Password".into());
     }
     let key = new_vault_key()?;
-    let wrapped = wrap_vault_key(&key, password)?;
     let prepared = stage_files(connection, files_dir, &key, true)?;
     let outcome = (|| {
         let tx = connection
@@ -774,9 +811,10 @@ pub fn enable(
         tx.execute("UPDATE files SET encrypted=1", [])
             .map_err(|error| error.to_string())?;
         swap_files(files_dir, &prepared)?;
+        key_slots::install_password_slot(&tx, VaultScope::Content, &key, password)?;
         tx.execute(
-            "UPDATE security SET encryption_enabled=1,encryption_salt=?1,wrapped_key=?2 WHERE id=1",
-            params![wrapped.salt, wrapped.wrapped],
+            "UPDATE security SET encryption_enabled=1,encryption_salt=NULL,wrapped_key=NULL WHERE id=1",
+            [],
         )
         .map_err(|error| error.to_string())?;
         tx.commit().map_err(|error| error.to_string())?;
@@ -880,6 +918,7 @@ pub fn disable(
         tx.execute("UPDATE index_state SET needs_index=1,indexed_at=NULL,status='pending',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", []).map_err(|error| error.to_string())?;
         swap_files(files_dir, &prepared)?;
         tx.execute("UPDATE security SET encryption_enabled=0,encryption_salt=NULL,wrapped_key=NULL WHERE id=1", []).map_err(|error| error.to_string())?;
+        key_slots::remove_scope(&tx, VaultScope::Content)?;
         tx.commit().map_err(|error| error.to_string())?;
         Ok(ConversionSummary {
             item_count: items.len(),
@@ -899,20 +938,23 @@ pub fn change_password(
         return Err("Incorrect Master Password".into());
     }
     let verifier = hash_secret(next)?;
-    let wrapped = if is_enabled(connection)? {
-        let key = unlock(connection, current)?
-            .ok_or_else(|| "Could not unlock protected data".to_string())?;
-        Some(wrap_vault_key(&key, next)?)
+    // Unlocking also moves an older vault onto a v1 slot first.
+    let key = if is_enabled(connection)? {
+        Some(
+            unlock(connection, current)?
+                .ok_or_else(|| "Could not unlock protected data".to_string())?,
+        )
     } else {
         None
     };
     let tx = connection
         .transaction()
         .map_err(|error| error.to_string())?;
-    if let Some(wrapped) = wrapped {
-        tx.execute("UPDATE security SET password_verifier=?1,encryption_salt=?2,wrapped_key=?3,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=1", params![verifier,wrapped.salt,wrapped.wrapped]).map_err(|error| error.to_string())?;
-    } else {
-        tx.execute("UPDATE security SET password_verifier=?1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=1", params![verifier]).map_err(|error| error.to_string())?;
+    // The verifier and the password slot change together; the data key, the
+    // encrypted records and any other slots stay as they are.
+    tx.execute("UPDATE security SET password_verifier=?1,encryption_salt=NULL,wrapped_key=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=1", params![verifier]).map_err(|error| error.to_string())?;
+    if let Some(key) = key.as_ref() {
+        key_slots::replace_password_slot(&tx, VaultScope::Content, key, next)?;
     }
     tx.commit().map_err(|error| error.to_string())
 }
@@ -936,6 +978,8 @@ pub fn unlock_content_vault(
     let guard = state.require_connection()?;
     let connection = guard.as_ref().expect("checked above");
     state.check_attempt()?;
+    // A lock that lands while the password is being checked must win.
+    let generation = state.session_generation();
     let matched = if !is_enabled(connection)? {
         verifier_matches(connection, &password)?
     } else {
@@ -943,6 +987,9 @@ pub fn unlock_content_vault(
             Some(key) => {
                 // Finishes rows saved before names were sealed.
                 seal_all(connection, &key)?;
+                if state.session_generation() != generation {
+                    return Err("Kivo locked while unlocking. Try again.".to_string());
+                }
                 state.content_key().store(key)?;
                 true
             }

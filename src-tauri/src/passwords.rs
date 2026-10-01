@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use aes_gcm::{
@@ -11,6 +12,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::database::DatabaseState;
+use crate::key_slots::{self, VaultScope};
 
 const KEY_LENGTH: usize = 32;
 const SALT_LENGTH: usize = 16;
@@ -26,7 +28,7 @@ const UNLOCK_ERROR: &str = "Could not unlock the vault";
 /// Holds the derived vault key while the vault is unlocked. The key exists only
 /// in memory; locking overwrites the bytes and clears the slot.
 #[derive(Default)]
-pub struct VaultKeyState(Mutex<Option<[u8; KEY_LENGTH]>>);
+pub struct VaultKeyState(Mutex<Option<[u8; KEY_LENGTH]>>, AtomicU64);
 
 impl VaultKeyState {
     pub(crate) fn require_key(&self) -> Result<[u8; KEY_LENGTH], String> {
@@ -47,8 +49,29 @@ impl VaultKeyState {
         }
     }
 
+    /// Goes up on every lock. An unlock that started before a lock must not
+    /// put its key back afterwards.
+    fn generation(&self) -> u64 {
+        self.1.load(Ordering::SeqCst)
+    }
+
+    /// Stores `key` only if no lock happened since `generation` was read.
+    fn store_if_current(&self, mut key: [u8; KEY_LENGTH], generation: u64) -> Result<(), String> {
+        let Ok(mut guard) = self.0.lock() else {
+            key.fill(0);
+            return Err(LOCKED_MESSAGE.to_string());
+        };
+        if self.generation() != generation {
+            key.fill(0);
+            return Err("The password vault locked while unlocking. Try again.".to_string());
+        }
+        *guard = Some(key);
+        Ok(())
+    }
+
     pub(crate) fn clear(&self) {
         if let Ok(mut guard) = self.0.lock() {
+            self.1.fetch_add(1, Ordering::SeqCst);
             if let Some(key) = guard.as_mut() {
                 key.fill(0);
             }
@@ -837,8 +860,8 @@ fn setup_vault_in(
         return Err("The password vault is already set up".to_string());
     }
 
-    let salt = random_bytes::<SALT_LENGTH>()?;
-    let key = derive_key(master_password, &salt)?;
+    // A random data key behind a v1 password slot; the password never derives it.
+    let key = random_bytes::<KEY_LENGTH>()?;
     let nonce = random_bytes::<NONCE_LENGTH>()?;
     let ciphertext = encrypt(&key, &nonce, CANARY_PLAINTEXT, b"")?;
 
@@ -853,9 +876,10 @@ fn setup_vault_in(
              VALUES (1, ?1, ?2, ?3,
                      strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                      strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-            params![salt.as_slice(), nonce.as_slice(), ciphertext],
+            params![SLOT_SALT_PLACEHOLDER.as_slice(), nonce.as_slice(), ciphertext],
         )
         .map_err(|error| format!("Could not save the password vault: {error}"))?;
+    key_slots::install_password_slot(&transaction, VaultScope::Passwords, &key, master_password)?;
 
     transaction
         .commit()
@@ -864,10 +888,17 @@ fn setup_vault_in(
     Ok(key)
 }
 
+/// Opens the password vault's data key. A v1 vault opens only through its
+/// password slot (never the older derivation); an older vault derives its key
+/// from the password as before.
 fn unlock_vault_in(
     connection: &Connection,
     master_password: &str,
 ) -> Result<[u8; KEY_LENGTH], String> {
+    if key_slots::has_slots(connection, VaultScope::Passwords)? {
+        return key_slots::unlock_with_password(connection, VaultScope::Passwords, master_password)?
+            .ok_or_else(|| UNLOCK_ERROR.to_string());
+    }
     let config = read_vault_config(connection)
         .map_err(|error| format!("Could not read the password vault: {error}"))?;
 
@@ -1205,24 +1236,192 @@ fn setup_vault_with_state(
     vault_status_with_state(db, vault)
 }
 
+/// Unlocks, moving an older vault to a random data key first when every
+/// record can be read. See `upgrade_legacy_vault`.
+fn unlock_and_upgrade(connection: &mut Connection, master_password: &str) -> Result<[u8; KEY_LENGTH], String> {
+    let mut key = unlock_vault_in(connection, master_password)?;
+    if key_slots::has_slots(connection, VaultScope::Passwords)? {
+        // Rows in the oldest readable-fields format can still arrive (for
+        // example from an older backup); seal them with the current key.
+        if convert_legacy_credentials(connection, &key)? > 0 {
+            let _ = connection.execute_batch("VACUUM");
+        }
+        return Ok(key);
+    }
+    match upgrade_legacy_vault(connection, &key, master_password) {
+        Ok(new_key) => {
+            key.fill(0);
+            // Rewrites the file so no copy of the old ciphertext or readable fields is left.
+            let _ = connection.execute_batch("VACUUM");
+            Ok(new_key)
+        }
+        // A record that cannot be read blocks the upgrade, which changed
+        // nothing; the vault keeps working in its older form until repaired.
+        Err(_) => {
+            if convert_legacy_credentials(connection, &key)? > 0 {
+                let _ = connection.execute_batch("VACUUM");
+            }
+            Ok(key)
+        }
+    }
+}
+
 fn unlock_vault_with_state(
     db: &DatabaseState,
     vault: &VaultKeyState,
     master_password: &str,
 ) -> Result<VaultStatus, String> {
+    let generation = vault.generation();
     {
         let mut connection = db.require_connection()?;
         let connection = connection.as_mut().expect("checked above");
-        let key = unlock_vault_in(connection, master_password)?;
-        // Older rows keep readable fields until the key is here to seal them.
-        if convert_legacy_credentials(connection, &key)? > 0 {
-            // Rewrites the file so no copy of the old readable fields is left.
-            let _ = connection.execute_batch("VACUUM");
-        }
-        vault.store(key);
+        let key = unlock_and_upgrade(connection, master_password)?;
+        vault.store_if_current(key, generation)?;
     }
 
     vault_status_with_state(db, vault)
+}
+
+/// Changes only the password vault's password: its slot is rewrapped, the
+/// data key and every saved credential and history entry stay as they are.
+fn change_vault_password_with_state(
+    db: &DatabaseState,
+    current: &str,
+    next: &str,
+) -> Result<(), String> {
+    if next.chars().count() < MIN_PASSWORD_LENGTH {
+        return Err("Use at least 8 characters".to_string());
+    }
+    let mut guard = db.require_connection()?;
+    let connection = guard.as_mut().expect("checked above");
+    let mut key = unlock_and_upgrade(connection, current)?;
+    let result = (|| {
+        if !key_slots::has_slots(connection, VaultScope::Passwords)? {
+            return Err(
+                "Some saved passwords could not be read. Check vault health, then try again."
+                    .to_string(),
+            );
+        }
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("Could not change the password: {error}"))?;
+        key_slots::replace_password_slot(&transaction, VaultScope::Passwords, &key, next)?;
+        transaction
+            .commit()
+            .map_err(|error| format!("Could not change the password: {error}"))
+    })();
+    key.fill(0);
+    result
+}
+
+/// The `vault_config.salt` column is NOT NULL from the original schema. A v1
+/// vault never derives a key from it, so it holds this fixed placeholder.
+const SLOT_SALT_PLACEHOLDER: [u8; SALT_LENGTH] = [0; SALT_LENGTH];
+
+/// Moves an older password vault (key derived from the password) to a random
+/// data key behind a v1 password slot. Every credential, pre-blob row and
+/// history entry is read and authenticated first without changing anything;
+/// then one transaction re-encrypts all of them with fresh nonces, replaces the
+/// canary, retires the old salt and installs the slot. Ids, dates, favorites
+/// and Trash state stay. Any failure leaves the vault exactly as it was.
+fn upgrade_legacy_vault(
+    connection: &mut Connection,
+    old_key: &[u8; KEY_LENGTH],
+    master_password: &str,
+) -> Result<[u8; KEY_LENGTH], String> {
+    let fail = |error: rusqlite::Error| format!("Could not update the password vault: {error}");
+
+    // 1. Read and authenticate everything with the old key.
+    let rows: Vec<(String, Option<Vec<u8>>, Option<Vec<u8>>, Vec<u8>, Vec<u8>, String, String, String, String, String, String)> = {
+        let mut statement = connection
+            .prepare(
+                "SELECT id, data_nonce, data_ciphertext, password_nonce, password_ciphertext,
+                        service, username, url, category, tags, notes
+                 FROM credentials",
+            )
+            .map_err(fail)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
+                    row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?,
+                ))
+            })
+            .map_err(fail)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(fail)?;
+        rows
+    };
+    let mut credentials = Vec::with_capacity(rows.len());
+    for (id, data_nonce, data_ciphertext, password_nonce, password_ciphertext, service, username, url, category, tags, notes) in rows {
+        let data = match (data_nonce, data_ciphertext) {
+            (Some(nonce), Some(ciphertext)) => open_credential(old_key, &id, &nonce, &ciphertext)?,
+            _ => {
+                let nonce: [u8; NONCE_LENGTH] = password_nonce
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Could not read the credential".to_string())?;
+                let password = decrypt(old_key, &nonce, &password_ciphertext, CREDENTIAL_AAD)
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                    .ok_or_else(|| "Could not read the credential".to_string())?;
+                CredentialData { service, username, password, url, category, tags: parse_tags(&tags), notes }
+            }
+        };
+        credentials.push((id, data));
+    }
+    let version_rows: Vec<(String, String, Vec<u8>, Vec<u8>)> = {
+        let mut statement = connection
+            .prepare("SELECT id, credential_id, data_nonce, data_ciphertext FROM credential_versions")
+            .map_err(fail)?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .map_err(fail)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(fail)?;
+        rows
+    };
+    let mut versions = Vec::with_capacity(version_rows.len());
+    for (id, credential_id, nonce, ciphertext) in version_rows {
+        let nonce: [u8; NONCE_LENGTH] = nonce
+            .as_slice()
+            .try_into()
+            .map_err(|_| "Could not read the history".to_string())?;
+        let plain = decrypt(old_key, &nonce, &ciphertext, &version_aad(&credential_id, &id))
+            .map_err(|_| "Could not read the history".to_string())?;
+        versions.push((id, credential_id, zeroize::Zeroizing::new(plain)));
+    }
+
+    // 2. Rewrite everything under a new random key in one transaction.
+    let new_key = random_bytes::<KEY_LENGTH>()?;
+    let transaction = connection.transaction().map_err(fail)?;
+    for (id, data) in &credentials {
+        write_sealed(&transaction, &new_key, id, data)?;
+    }
+    for (id, credential_id, plain) in &versions {
+        let nonce = random_bytes::<NONCE_LENGTH>()?;
+        let ciphertext = encrypt(&new_key, &nonce, plain, &version_aad(credential_id, id))?;
+        transaction
+            .execute(
+                "UPDATE credential_versions SET data_nonce = ?1, data_ciphertext = ?2 WHERE id = ?3",
+                params![nonce.as_slice(), ciphertext, id],
+            )
+            .map_err(fail)?;
+    }
+    let canary_nonce = random_bytes::<NONCE_LENGTH>()?;
+    let canary = encrypt(&new_key, &canary_nonce, CANARY_PLAINTEXT, b"")?;
+    transaction
+        .execute(
+            "UPDATE vault_config
+             SET salt = ?1, canary_nonce = ?2, canary_ciphertext = ?3,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = 1",
+            params![SLOT_SALT_PLACEHOLDER.as_slice(), canary_nonce.as_slice(), canary],
+        )
+        .map_err(fail)?;
+    key_slots::install_password_slot(&transaction, VaultScope::Passwords, &new_key, master_password)?;
+    transaction.commit().map_err(fail)?;
+    Ok(new_key)
 }
 
 fn lock_vault_with_state(db: &DatabaseState, vault: &VaultKeyState) -> Result<VaultStatus, String> {
@@ -1355,6 +1554,18 @@ pub fn unlock_vault(
 ) -> Result<VaultStatus, String> {
     db.check_attempt()?;
     let result = unlock_vault_with_state(db.inner(), vault.inner(), &master_password);
+    record_secret_result(&db, &result, UNLOCK_ERROR);
+    result
+}
+
+#[tauri::command]
+pub fn change_password_vault_password(
+    current: String,
+    next: String,
+    db: State<'_, DatabaseState>,
+) -> Result<(), String> {
+    db.check_attempt()?;
+    let result = change_vault_password_with_state(db.inner(), &current, &next);
     record_secret_result(&db, &result, UNLOCK_ERROR);
     result
 }
@@ -1768,8 +1979,10 @@ mod tests {
             .windows(13)
             .any(|window| window == CANARY_PLAINTEXT));
 
-        // The stored salt re-derives the same key the setup returned.
-        assert_eq!(
+        // T24: the data key is random behind a v1 slot; the password does not derive it.
+        assert_eq!(salt, SLOT_SALT_PLACEHOLDER.to_vec());
+        assert!(key_slots::has_slots(&connection, VaultScope::Passwords).expect("slots"));
+        assert_ne!(
             derive_key("correct horse battery", &salt).expect("derive"),
             key
         );
@@ -2447,24 +2660,186 @@ mod tests {
         assert!(unlock_vault_with_state(&db, &vault, "wrong password").is_err());
         assert!(vault.require_key().is_err());
 
+        // A v1 vault proves its key with the stored key check (the canary is
+        // only for older vaults), so alter that instead.
         {
             let guard = db.require_connection().expect("lock connection");
             let connection = guard.as_ref().expect("connection is initialized");
-            let mut canary: Vec<u8> = connection
-                .query_row("SELECT canary_ciphertext FROM vault_config WHERE id = 1", [], |row| {
+            let mut check: Vec<u8> = connection
+                .query_row("SELECT key_check FROM vault_keys WHERE scope = 'passwords'", [], |row| {
                     row.get(0)
                 })
-                .expect("read canary");
-            *canary.last_mut().expect("canary has bytes") ^= 1;
+                .expect("read key check");
+            *check.last_mut().expect("key check has bytes") ^= 1;
             connection
                 .execute(
-                    "UPDATE vault_config SET canary_ciphertext = ?1 WHERE id = 1",
-                    params![canary],
+                    "UPDATE vault_keys SET key_check = ?1 WHERE scope = 'passwords'",
+                    params![check],
                 )
-                .expect("alter canary");
+                .expect("alter key check");
         }
 
         assert!(unlock_vault_with_state(&db, &vault, T24_VAULT_PASSWORD).is_err());
         assert!(vault.require_key().is_err());
+    }
+
+    // ---- T24 phase 5: password vault on a random key behind a v1 slot ----
+
+    const T24_OLD_PASSWORD: &str = "legacy vault password";
+
+    /// A password vault as older Kivo versions stored it: the key derived from
+    /// the password, a canary, sealed credentials (one trashed, one with
+    /// history) and one row in the oldest readable-fields format.
+    fn t24_legacy_vault() -> (TempVault, DatabaseState, VaultKeyState, [u8; KEY_LENGTH], String, String) {
+        let workspace = TempVault::new("t24-legacy");
+        let db = workspace.state();
+        let salt = random_bytes::<SALT_LENGTH>().unwrap();
+        let old_key = derive_key(T24_OLD_PASSWORD, &salt).unwrap();
+        {
+            let guard = db.require_connection().unwrap();
+            let connection = guard.as_ref().unwrap();
+            let nonce = random_bytes::<NONCE_LENGTH>().unwrap();
+            let canary = encrypt(&old_key, &nonce, CANARY_PLAINTEXT, b"").unwrap();
+            connection
+                .execute(
+                    "INSERT INTO vault_config (id, salt, canary_nonce, canary_ciphertext, created_at, updated_at)
+                     VALUES (1, ?1, ?2, ?3, 'then', 'then')",
+                    params![salt.as_slice(), nonce.as_slice(), canary],
+                )
+                .unwrap();
+        }
+        let vault = VaultKeyState::default();
+        vault.store(old_key);
+        let bank = save_credential_with_state(&db, &vault, &credential_input("Bank", "old-pass")).unwrap();
+        resave(&db, &vault, &bank.id, "new-pass");
+        let forum = save_credential_with_state(&db, &vault, &credential_input("Forum", "forum-pass")).unwrap();
+        trash_credentials_with_state(&db, &vault, &[forum.id.clone()]).unwrap();
+        {
+            let guard = db.require_connection().unwrap();
+            let nonce = random_bytes::<NONCE_LENGTH>().unwrap();
+            let ciphertext = encrypt(&old_key, &nonce, b"oldest-secret", CREDENTIAL_AAD).unwrap();
+            guard
+                .as_ref()
+                .unwrap()
+                .execute(
+                    "INSERT INTO credentials (id, service, username, password_nonce, password_ciphertext,
+                       url, category, tags, notes, created_at, updated_at)
+                     VALUES ('oldest', 'Mail', 'ada', ?1, ?2, '', 'Email', '[]', '', 'then', 'then')",
+                    params![nonce.as_slice(), ciphertext],
+                )
+                .unwrap();
+        }
+        vault.clear();
+        (workspace, db, vault, old_key, bank.id, forum.id)
+    }
+
+    fn t24_has_slot(db: &DatabaseState) -> bool {
+        let guard = db.require_connection().unwrap();
+        key_slots::has_slots(guard.as_ref().unwrap(), VaultScope::Passwords).unwrap()
+    }
+
+    #[test]
+    fn t24_older_vault_moves_to_a_random_key_and_keeps_everything() {
+        let (workspace, db, vault, old_key, bank, forum) = t24_legacy_vault();
+        let (old_nonce, old_ciphertext) = raw_secret(&db, &bank);
+
+        unlock_vault_with_state(&db, &vault, T24_OLD_PASSWORD).expect("unlock and upgrade");
+
+        assert!(t24_has_slot(&db));
+        let new_key = vault.require_key().unwrap();
+        assert_ne!(new_key, old_key, "the old password-derived key is no longer the vault key");
+        let (new_nonce, new_ciphertext) = raw_secret(&db, &bank);
+        assert_ne!(new_nonce, old_nonce, "fresh nonces");
+        assert_ne!(new_ciphertext, old_ciphertext);
+        assert!(open_credential(&old_key, &bank, &new_nonce, &new_ciphertext).is_err());
+
+        assert_eq!(load_credential_with_state(&db, &vault, &bank).unwrap().password, "new-pass");
+        assert_eq!(versions(&db, &vault, &bank)[0].password, "old-pass");
+        let trashed = load_credential_with_state(&db, &vault, &forum).unwrap();
+        assert!(trashed.deleted_at.is_some(), "Trash state is kept");
+        let oldest = load_credential_with_state(&db, &vault, "oldest").unwrap();
+        assert_eq!((oldest.password.as_str(), oldest.created_at.as_str()), ("oldest-secret", "then"));
+        {
+            let guard = db.require_connection().unwrap();
+            let salt: Vec<u8> = guard
+                .as_ref()
+                .unwrap()
+                .query_row("SELECT salt FROM vault_config WHERE id = 1", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(salt, SLOT_SALT_PLACEHOLDER.to_vec(), "the old derivation salt is retired");
+        }
+
+        // Survives a restart and still refuses the wrong password.
+        drop(db);
+        let reopened = workspace.state();
+        let fresh = VaultKeyState::default();
+        assert!(unlock_vault_with_state(&reopened, &fresh, "wrong password").is_err());
+        unlock_vault_with_state(&reopened, &fresh, T24_OLD_PASSWORD).expect("unlock after restart");
+        assert_eq!(fresh.require_key().unwrap(), new_key);
+        assert!(check_reset_password(reopened.require_connection().unwrap().as_ref().unwrap(), Some(T24_OLD_PASSWORD)).unwrap());
+    }
+
+    #[test]
+    fn t24_a_record_that_cannot_be_read_blocks_the_upgrade_without_changing_anything() {
+        let (_workspace, db, vault, old_key, bank, _forum) = t24_legacy_vault();
+        {
+            let guard = db.require_connection().unwrap();
+            guard
+                .as_ref()
+                .unwrap()
+                .execute("UPDATE credential_versions SET data_ciphertext = x'00112233445566778899aabbccddeeff00'", [])
+                .unwrap();
+        }
+        let before = raw_secret(&db, &bank);
+
+        unlock_vault_with_state(&db, &vault, T24_OLD_PASSWORD).expect("still unlocks the older way");
+
+        assert!(!t24_has_slot(&db), "no half-upgraded state");
+        assert_eq!(vault.require_key().unwrap(), old_key);
+        assert_eq!(raw_secret(&db, &bank), before);
+        assert_eq!(load_credential_with_state(&db, &vault, &bank).unwrap().password, "new-pass");
+        assert!(change_vault_password_with_state(&db, T24_OLD_PASSWORD, "another long password").is_err());
+    }
+
+    #[test]
+    fn t24_changing_the_vault_password_rewraps_only_the_slot() {
+        let (_workspace, db, vault) = unlocked_vault();
+        let saved = save_credential_with_state(&db, &vault, &credential_input("Bank", "secret")).unwrap();
+        let key = vault.require_key().unwrap();
+        let before = raw_secret(&db, &saved.id);
+
+        assert!(change_vault_password_with_state(&db, "correct horse battery", "short").is_err());
+        assert!(change_vault_password_with_state(&db, "wrong password", "a long new password").is_err());
+        change_vault_password_with_state(&db, "correct horse battery", "a long new password").unwrap();
+
+        assert_eq!(raw_secret(&db, &saved.id), before, "credentials are not re-encrypted");
+        let guard = db.require_connection().unwrap();
+        let connection = guard.as_ref().unwrap();
+        assert!(unlock_vault_in(connection, "correct horse battery").is_err());
+        assert_eq!(unlock_vault_in(connection, "a long new password").unwrap(), key);
+    }
+
+    #[test]
+    fn t24_content_password_change_leaves_the_password_vault_alone() {
+        let (_workspace, db, vault) = t24_two_vaults();
+        vault.clear();
+        {
+            let mut guard = db.require_connection().unwrap();
+            crate::encryption::change_password(guard.as_mut().unwrap(), T24_CONTENT_PASSWORD, "new content password")
+                .unwrap();
+        }
+        assert!(unlock_vault_with_state(&db, &vault, T24_VAULT_PASSWORD).is_ok());
+        assert!(unlock_vault_with_state(&db, &vault, "new content password").is_err());
+    }
+
+    #[test]
+    fn t24_a_lock_during_unlock_keeps_the_vault_locked() {
+        let vault = VaultKeyState::default();
+        let generation = vault.generation();
+        vault.clear();
+
+        assert!(vault.store_if_current([7; KEY_LENGTH], generation).is_err());
+        assert!(vault.require_key().is_err());
+        assert!(vault.store_if_current([7; KEY_LENGTH], vault.generation()).is_ok());
     }
 }

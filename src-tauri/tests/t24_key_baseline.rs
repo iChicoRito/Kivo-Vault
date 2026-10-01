@@ -8,6 +8,8 @@
 mod database;
 #[path = "../src/encryption.rs"]
 mod encryption;
+#[path = "../src/key_slots.rs"]
+mod key_slots;
 #[path = "../src/security.rs"]
 mod security;
 
@@ -130,12 +132,23 @@ fn altered_wrapped_key_does_not_unlock() {
     let workspace = Workspace::new();
     encrypted_vault(&workspace);
     let connection = open(&workspace.db());
-    let mut wrapped: Vec<u8> = connection
-        .query_row("SELECT wrapped_key FROM security WHERE id=1", [], |row| row.get(0))
+    // Since T24 phase 5 the key lives in a v1 password slot, so alter that.
+    let envelope: String = connection
+        .query_row(
+            "SELECT envelope_json FROM vault_key_slots WHERE scope='content' AND method='password'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    *wrapped.last_mut().unwrap() ^= 1;
+    let mut json: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+    let ciphertext = json["ciphertext"].as_str().unwrap().to_string();
+    let flipped = if ciphertext.starts_with('A') { "B" } else { "A" };
+    json["ciphertext"] = format!("{flipped}{}", &ciphertext[1..]).into();
     connection
-        .execute("UPDATE security SET wrapped_key=?1 WHERE id=1", params![wrapped])
+        .execute(
+            "UPDATE vault_key_slots SET envelope_json=?1 WHERE scope='content'",
+            params![json.to_string()],
+        )
         .unwrap();
 
     assert!(encryption::unlock(&connection, PASSWORD).is_err());

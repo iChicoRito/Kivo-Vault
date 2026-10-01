@@ -41,6 +41,7 @@ import { useVaultChanged } from '../../lib/useVaultChanged'
 import { CredentialDialog } from './CredentialDialog'
 import { CredentialRow } from './CredentialRow'
 import { PasswordImportDialog } from './PasswordImportDialog'
+import { ChangeVaultPasswordDialog } from './ChangeVaultPasswordDialog'
 import { PasswordGeneratorPanel } from './PasswordGeneratorPanel'
 import { VaultGate } from './VaultGate'
 
@@ -96,6 +97,7 @@ function PasswordsPageContent() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Credential | null>(null)
   const [importOpen, setImportOpen] = useState(false)
+  const [changeOpen, setChangeOpen] = useState(false)
   const [locking, setLocking] = useState(false)
 
   useVaultChanged(() => setAttempt((value) => value + 1))
@@ -204,6 +206,9 @@ function PasswordsPageContent() {
           <Button isDisabled={locking} variant="secondary" onPress={() => void handleLock()}>
             <HugeiconsIcon aria-hidden="true" icon={SquareLock01Icon} size={18} />
             {locking ? 'Locking...' : 'Lock Vault'}
+          </Button>
+          <Button variant="secondary" onPress={() => setChangeOpen(true)}>
+            Change Password
           </Button>
           <Button variant="secondary" onPress={() => setImportOpen(true)}>
             <HugeiconsIcon aria-hidden="true" icon={FileImportIcon} size={18} />
@@ -319,6 +324,8 @@ function PasswordsPageContent() {
         onClose={() => setImportOpen(false)}
         onImported={() => setAttempt((value) => value + 1)}
       />
+
+      <ChangeVaultPasswordDialog open={changeOpen} onClose={() => setChangeOpen(false)} />
 
       <ConfirmDialog
         confirmLabel={trashed ? 'Delete forever' : 'Move to trash'}

@@ -148,6 +148,7 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
     case 'preview_file_import':
     case 'commit_file_import':
     case 'cancel_file_import':
+    case 'change_password_vault_password':
       throw new Error('This action needs the Kivo desktop app.')
     case 'initialize_database':
       return undefined as T

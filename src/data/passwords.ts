@@ -72,6 +72,11 @@ export async function unlockVault(masterPassword: string): Promise<VaultStatus> 
   return status
 }
 
+/** Changes only the password vault's password; saved passwords are not re-encrypted. */
+export async function changeVaultPassword(current: string, next: string): Promise<void> {
+  return invoke<void>('change_password_vault_password', { current, next })
+}
+
 export async function lockVault(): Promise<VaultStatus> {
   const status = await invoke<VaultStatus>('lock_vault')
   notifyVaultChanged()

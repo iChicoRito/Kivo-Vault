@@ -6,6 +6,8 @@ mod backup;
 mod database;
 #[path = "../src/encryption.rs"]
 mod encryption;
+#[path = "../src/key_slots.rs"]
+mod key_slots;
 #[path = "../src/security.rs"]
 mod security;
 
@@ -216,7 +218,7 @@ fn inspect_rejects_newer_schema_and_manifest_traversal() {
     let manifest_path = backup_path.join("manifest.json");
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    manifest["schemaVersion"] = 20.into();
+    manifest["schemaVersion"] = 21.into();
     fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(inspect_backup_at(&backup_path)
         .problems

@@ -32,6 +32,7 @@ const CREDENTIAL_HISTORY_MIGRATION: &str =
     include_str!("../migrations/0018_credential_history_and_clipboard.sql");
 const CAPTURE_FINGERPRINTS_MIGRATION: &str =
     include_str!("../migrations/0019_capture_fingerprints.sql");
+const VAULT_KEY_SLOTS_MIGRATION: &str = include_str!("../migrations/0020_vault_key_slots.sql");
 
 struct Migration {
     version: i64,
@@ -116,6 +117,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 19,
         sql: CAPTURE_FINGERPRINTS_MIGRATION,
+    },
+    Migration {
+        version: 20,
+        sql: VAULT_KEY_SLOTS_MIGRATION,
     },
 ];
 
@@ -1155,7 +1160,7 @@ mod tests {
             .expect("mark password vault version");
         connection.execute("INSERT INTO credentials(id, service, password_nonce, password_ciphertext, created_at, updated_at) VALUES ('credential-1', 'Kept', x'010203', x'040506', '2026-01-01', '2026-01-01')", []).expect("seed credential");
         apply_migrations(&mut connection).expect("upgrade version 10 vault");
-        assert_eq!(read_user_version(&connection), 19);
+        assert_eq!(read_user_version(&connection), 20);
         assert!(table_exists(&connection, "credentials"));
         assert!(table_exists(&connection, "item_search"));
         assert!(table_exists(&connection, "item_versions"));
@@ -1172,7 +1177,7 @@ mod tests {
         apply_migrations(&mut connection).expect("first migration");
         apply_migrations(&mut connection).expect("second migration");
 
-        assert_eq!(read_user_version(&connection), 19);
+        assert_eq!(read_user_version(&connection), 20);
 
         for table in [
             "profile",
@@ -1184,6 +1189,8 @@ mod tests {
             "index_state",
             "vault_config",
             "credentials",
+            "vault_keys",
+            "vault_key_slots",
         ] {
             assert!(table_exists(&connection, table), "missing table {table}");
         }
@@ -1216,7 +1223,7 @@ mod tests {
         let mut connection = Connection::open_in_memory().expect("open in-memory database");
 
         apply_migrations(&mut connection).expect("first migration");
-        assert_eq!(read_user_version(&connection), 19);
+        assert_eq!(read_user_version(&connection), 20);
 
         // Dropping a table gives the test a way to detect whether the migration ran again.
         connection
@@ -1229,7 +1236,7 @@ mod tests {
             !table_exists(&connection, "preferences"),
             "an up-to-date database must not re-run its migration"
         );
-        assert_eq!(read_user_version(&connection), 19);
+        assert_eq!(read_user_version(&connection), 20);
     }
 
     #[test]
@@ -1252,7 +1259,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 19);
+        assert_eq!(read_user_version(&connection), 20);
         assert_eq!(
             read_preferences(&connection).expect("read preferences"),
             Preferences {
@@ -1328,7 +1335,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 19);
+        assert_eq!(read_user_version(&connection), 20);
         assert!(
             !table_exists(&connection, "starter_collections"),
             "the onboarding table is dropped after the copy"
@@ -1411,7 +1418,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 19);
+        assert_eq!(read_user_version(&connection), 20);
 
         let (title, content, is_pinned, deleted_at, icon): (
             String,
@@ -1476,7 +1483,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 19);
+        assert_eq!(read_user_version(&connection), 20);
         let collections_view: String = connection
             .query_row(
                 "SELECT collections_view FROM preferences WHERE id = 1",
@@ -1519,7 +1526,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 19);
+        assert_eq!(read_user_version(&connection), 20);
         let (protection, secret_hash): (String, Option<String>) = connection
             .query_row(
                 "SELECT protection, secret_hash FROM collections WHERE id = 'col-old'",
@@ -1578,7 +1585,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 19);
+        assert_eq!(read_user_version(&connection), 20);
         let tags: String = connection
             .query_row("SELECT tags FROM items WHERE id = 'item-1'", [], |row| {
                 row.get(0)

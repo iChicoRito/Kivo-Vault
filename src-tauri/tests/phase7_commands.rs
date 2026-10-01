@@ -6,6 +6,8 @@ mod database;
 mod duplicates;
 #[path = "../src/encryption.rs"]
 mod encryption;
+#[path = "../src/key_slots.rs"]
+mod key_slots;
 #[path = "../src/insights.rs"]
 mod insights;
 #[path = "../src/security.rs"]

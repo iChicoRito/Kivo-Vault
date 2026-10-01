@@ -4,6 +4,8 @@
 mod database;
 #[path = "../src/encryption.rs"]
 mod encryption;
+#[path = "../src/key_slots.rs"]
+mod key_slots;
 #[path = "../src/security.rs"]
 mod security;
 

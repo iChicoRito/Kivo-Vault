@@ -5,6 +5,7 @@ mod encryption;
 mod health;
 mod icons;
 mod insights;
+mod key_slots;
 mod link_details;
 mod passwords;
 mod portability;
@@ -141,6 +142,7 @@ pub fn run() {
             passwords::setup_vault,
             passwords::unlock_vault,
             passwords::lock_vault,
+            passwords::change_password_vault_password,
             passwords::list_credentials,
             passwords::load_credential,
             passwords::save_credential,

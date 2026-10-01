@@ -15,7 +15,8 @@ afterEach(() => vi.useRealTimers())
 it('manual lock hides content and clears both content and password manager keys', async () => {
   getTauriInvoke().mockImplementation((command: string) => Promise.resolve(
     command === 'read_protection_state' ? { lockEnabled: true, encryptionEnabled: false } :
-    command === 'load_password_verifier' ? 'hash' : command === 'unlock_content_vault' ? true : undefined,
+    command === 'load_password_verifier' ? 'hash' : command === 'unlock_content_vault' ? true :
+    command === 'has_password_verifier' ? true : undefined,
   ))
   render(<LockProvider initialLocked={false} autoLockMinutes={0}><Probe /></LockProvider>)
   fireEvent.click(screen.getByRole('button', { name: 'Lock Kivo' }))
@@ -27,9 +28,23 @@ it('manual lock hides content and clears both content and password manager keys'
   await waitFor(() => expect(screen.getByText('Vault content')).toBeInTheDocument())
 })
 
+it('without an app lock, locking keeps Kivo open and only clears the vault keys', async () => {
+  getTauriInvoke().mockImplementation((command: string) => Promise.resolve(
+    command === 'has_password_verifier' ? false : undefined,
+  ))
+  render(<LockProvider initialLocked={false} autoLockMinutes={0}><Probe /></LockProvider>)
+  fireEvent.click(screen.getByRole('button', { name: 'Lock Kivo' }))
+
+  await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('lock_vault'))
+  expect(getTauriInvoke()).toHaveBeenCalledWith('lock_content_vault')
+  expect(screen.getByText('Vault content')).toBeInTheDocument()
+  expect(screen.queryByText('Unlock your vault')).not.toBeInTheDocument()
+})
+
 it('activity resets inactivity deadline, and zero disables automatic lock', async () => {
   vi.useFakeTimers()
-  getTauriInvoke().mockResolvedValue(undefined)
+  // `true` answers has_password_verifier: an app lock exists.
+  getTauriInvoke().mockResolvedValue(true)
   const view = render(<LockProvider initialLocked={false} autoLockMinutes={5}><Probe /></LockProvider>)
   await act(async () => { vi.advanceTimersByTime(4 * 60_000); fireEvent.keyDown(window); vi.advanceTimersByTime(4 * 60_000) })
   expect(screen.getByText('Vault content')).toBeInTheDocument()
@@ -43,7 +58,8 @@ it('activity resets inactivity deadline, and zero disables automatic lock', asyn
 
 it('locks on return from sleep when the idle time has passed, and focus is not activity', async () => {
   vi.useFakeTimers()
-  getTauriInvoke().mockResolvedValue(undefined)
+  // `true` answers has_password_verifier: an app lock exists.
+  getTauriInvoke().mockResolvedValue(true)
   render(<LockProvider initialLocked={false} autoLockMinutes={5}><Probe /></LockProvider>)
 
   // Focus alone must not push the deadline back.
@@ -54,7 +70,8 @@ it('locks on return from sleep when the idle time has passed, and focus is not a
 
 it('checks real elapsed time when the window returns, since timers pause during sleep', async () => {
   vi.useFakeTimers()
-  getTauriInvoke().mockResolvedValue(undefined)
+  // `true` answers has_password_verifier: an app lock exists.
+  getTauriInvoke().mockResolvedValue(true)
   render(<LockProvider initialLocked={false} autoLockMinutes={5}><Probe /></LockProvider>)
 
   // The clock jumps ahead without any timer firing, as after sleep.

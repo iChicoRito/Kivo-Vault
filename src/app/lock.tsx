@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { lockVault as lockContentVault } from '../data/protection'
 import { lockVault as lockPasswordVault } from '../data/passwords'
+import { hasAppLock } from '../data/security'
 import UnlockPage from '../features/security/UnlockPage'
 import { usePreferences } from './preferences'
 
@@ -21,7 +22,11 @@ export function LockProvider({ children, initialLocked = false, autoLockMinutes 
   const minutes = autoLockMinutes ?? preferences.autoLockMinutes
 
   const lock = useCallback(async () => {
-    setLocked(true)
+    // Without an app lock there is no password to ask for, so Kivo stays open;
+    // the keys are still cleared, which locks the password vault. If the check
+    // fails, lock anyway rather than leave content showing.
+    const appLocked = await hasAppLock().catch(() => true)
+    if (appLocked) setLocked(true)
     await Promise.allSettled([lockContentVault(), lockPasswordVault()])
   }, [])
 

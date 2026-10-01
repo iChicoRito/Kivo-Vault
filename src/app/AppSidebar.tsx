@@ -20,6 +20,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { matchPath, useHref, useLocation, useNavigate } from 'react-router-dom'
 
 import { loadProfile, type Profile } from '../data/settings'
+import { hasAppLock } from '../data/security'
 import { notifyError } from '../lib/feedback'
 import { cn } from '../lib/utils'
 import { useScrollDrag } from './AppDock'
@@ -42,12 +43,19 @@ function initials(name: string) {
 function SidebarProfile({ pathname }: { pathname: string }) {
   const appLock = useLock()
   const [profile, setProfile] = useState<Profile | null>(null)
+  // Lock Kivo only makes sense with an app lock (Master Password) to unlock with.
+  const [hasLock, setHasLock] = useState(false)
 
   useEffect(() => {
     let active = true
     void loadProfile()
       .then((loaded) => {
         if (active) setProfile(loaded)
+      })
+      .catch(() => {})
+    void hasAppLock()
+      .then((value) => {
+        if (active) setHasLock(value)
       })
       .catch(() => {})
     return () => {
@@ -89,14 +97,14 @@ function SidebarProfile({ pathname }: { pathname: string }) {
         </Button>
         <Dropdown.Popover className="min-w-48" placement="top start">
           <Dropdown.Menu onAction={handleAction}>
-            {appLock ? (
+            {appLock && hasLock ? (
               <Dropdown.Item id="lock" textValue="Lock Kivo">
                 <HugeiconsIcon aria-hidden="true" icon={LockIcon} size={16} />
                 <Label>Lock Kivo</Label>
               </Dropdown.Item>
             ) : null}
             <Dropdown.Item id="quit" textValue="Quit Kivo" variant="danger">
-              <HugeiconsIcon aria-hidden="true" icon={Logout01Icon} size={16} />
+              <HugeiconsIcon aria-hidden="true" className="text-danger" icon={Logout01Icon} size={16} />
               <Label>Quit Kivo</Label>
             </Dropdown.Item>
           </Dropdown.Menu>

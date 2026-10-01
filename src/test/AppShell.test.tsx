@@ -26,7 +26,7 @@ import { LockProvider } from '../app/lock'
 import { navigationGroups } from '../app/navigation'
 import { DEFAULT_PREFERENCES, PreferencesProvider } from '../app/preferences'
 import type { Preferences } from '../data/settings'
-import { setMediaQueryMatches } from './setup'
+import { getTauriInvoke, setMediaQueryMatches } from './setup'
 
 const destinationLabels = [
   'Dashboard',
@@ -154,6 +154,7 @@ describe('AppShell', () => {
   })
 
   it('shows the owner in the sidebar footer with Lock and Quit actions', async () => {
+    getTauriInvoke().mockImplementation(async (command: string) => command === 'has_password_verifier')
     settingsMock.loadProfile.mockResolvedValue({
       ownerName: 'Ada Lovelace',
       vaultName: "Ada's Vault",
@@ -184,6 +185,30 @@ describe('AppShell', () => {
     expect(await screen.findByRole('menuitem', { name: 'Lock Kivo' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Quit Kivo' }))
     await waitFor(() => expect(windowMock.close).toHaveBeenCalledTimes(1))
+  })
+
+  it('leaves Lock Kivo out of the sidebar menu when there is no app lock, and shows Quit in red', async () => {
+    getTauriInvoke().mockImplementation(async (command: string) => (command === 'has_password_verifier' ? false : undefined))
+    settingsMock.loadProfile.mockResolvedValue({ ownerName: 'Ada Lovelace', vaultName: '', setupCompletedAt: '2026-01-01' })
+    render(
+      <PreferencesProvider initialPreferences={{ ...DEFAULT_PREFERENCES, navigationStyle: 'sidebar' }}>
+        <LockProvider>
+          <MemoryRouter initialEntries={['/notes']}>
+            <Routes>
+              <Route element={<AppShell />}>
+                <Route path="*" element={<RouteMarker />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </LockProvider>
+      </PreferencesProvider>,
+    )
+
+    await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('has_password_verifier'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Profile menu for Ada Lovelace' }))
+    const quit = await screen.findByRole('menuitem', { name: 'Quit Kivo' })
+    expect(screen.queryByRole('menuitem', { name: 'Lock Kivo' })).not.toBeInTheDocument()
+    expect(quit.querySelector('svg')).toHaveClass('text-danger')
   })
 
   it('documents the PASSWORDS group with one destination', () => {

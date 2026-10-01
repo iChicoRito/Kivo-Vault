@@ -88,6 +88,7 @@ const PREFERENCES: Preferences = {
   summaries: false,
   clipboardClearSeconds: 0,
   clipboardExcludeHistory: false,
+  linkDetails: true,
 }
 
 const RESET_PREFERENCES: Preferences = {
@@ -104,6 +105,7 @@ const RESET_PREFERENCES: Preferences = {
   summaries: false,
   clipboardClearSeconds: 0,
   clipboardExcludeHistory: false,
+  linkDetails: true,
 }
 
 const NATIVE_SAVE_ERROR = 'Kivo could not change whether it opens when you sign in.'

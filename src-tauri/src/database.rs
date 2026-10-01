@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use argon2::password_hash::phc::PasswordHash;
@@ -29,6 +30,8 @@ const CREDENTIAL_BLOB_MIGRATION: &str = include_str!("../migrations/0016_credent
 const SEALED_NAMES_MIGRATION: &str = include_str!("../migrations/0017_sealed_names.sql");
 const CREDENTIAL_HISTORY_MIGRATION: &str =
     include_str!("../migrations/0018_credential_history_and_clipboard.sql");
+const CAPTURE_FINGERPRINTS_MIGRATION: &str =
+    include_str!("../migrations/0019_capture_fingerprints.sql");
 
 struct Migration {
     version: i64,
@@ -110,6 +113,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 18,
         sql: CREDENTIAL_HISTORY_MIGRATION,
     },
+    Migration {
+        version: 19,
+        sql: CAPTURE_FINGERPRINTS_MIGRATION,
+    },
 ];
 
 pub struct DatabaseState {
@@ -125,6 +132,34 @@ pub struct DatabaseState {
     // Wrong tries across every password and PIN check. Memory only; a restart
     // clears it, which still turns a quick guessing run into a slow one.
     attempts: Mutex<Attempts>,
+    // Goes up on every collection lock or unlock. Results that name items or
+    // collections carry it so the UI can drop answers from an older access state.
+    access_epoch: AtomicU64,
+    // Goes up on lock, restore, reset, and encryption changes. Work started
+    // under an older value (such as a staged import) is refused.
+    session_generation: AtomicU64,
+    // The one file staged by `preview_file_import`, waiting for a decision.
+    pending_import: Mutex<Option<PendingImport>>,
+}
+
+/// A file copied into app-private staging so the bytes Kivo checked are the
+/// bytes it saves. While encryption is on the staged copy is sealed with the
+/// content key, so no plaintext copy is written to disk.
+pub(crate) struct PendingImport {
+    pub token: String,
+    pub generation: u64,
+    pub created: std::time::Instant,
+    pub staged: PathBuf,
+    pub encrypted: bool,
+    pub original_name: String,
+    pub byte_size: i64,
+    pub digest: [u8; 32],
+}
+
+impl Drop for PendingImport {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.staged);
+    }
 }
 
 #[derive(Default)]
@@ -281,6 +316,12 @@ pub struct Preferences {
     pub clipboard_clear_seconds: i64,
     #[serde(default)]
     pub clipboard_exclude_history: bool,
+    #[serde(default = "default_link_details")]
+    pub link_details: bool,
+}
+
+fn default_link_details() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -300,7 +341,47 @@ impl DatabaseState {
             content_key: crate::encryption::ContentKeyState::default(),
             unlocked_collections: Mutex::new(HashSet::new()),
             attempts: Mutex::new(Attempts::default()),
+            access_epoch: AtomicU64::new(0),
+            session_generation: AtomicU64::new(0),
+            pending_import: Mutex::new(None),
         }
+    }
+
+    pub(crate) fn access_epoch(&self) -> u64 {
+        self.access_epoch.load(Ordering::SeqCst)
+    }
+
+    fn advance_access_epoch(&self) {
+        self.access_epoch.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn session_generation(&self) -> u64 {
+        self.session_generation.load(Ordering::SeqCst)
+    }
+
+    /// Ends the current session's pending work: the generation moves on and
+    /// any staged import is dropped (its file is deleted). Never resets.
+    pub(crate) fn advance_session(&self) {
+        self.session_generation.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut pending) = self.pending_import.lock() {
+            pending.take();
+        }
+    }
+
+    pub(crate) fn pending_import(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<PendingImport>>, String> {
+        self.pending_import
+            .lock()
+            .map_err(|_| "Could not read the staged file".to_string())
+    }
+
+    /// App-private folder for staged imports, next to the database.
+    pub(crate) fn staging_dir(&self) -> PathBuf {
+        self.path
+            .parent()
+            .map(|parent| parent.join("pending-import"))
+            .unwrap_or_else(|| PathBuf::from("pending-import"))
     }
 
     /// Refuses a password or PIN check while a wait from earlier wrong tries
@@ -406,6 +487,7 @@ impl DatabaseState {
         if let Ok(mut unlocked) = self.unlocked_collections.lock() {
             unlocked.insert(id.to_string());
         }
+        self.advance_access_epoch();
     }
 
     #[allow(dead_code)]
@@ -421,12 +503,14 @@ impl DatabaseState {
         if let Ok(mut unlocked) = self.unlocked_collections.lock() {
             unlocked.remove(id);
         }
+        self.advance_access_epoch();
     }
 
     pub(crate) fn clear_unlocked_collections(&self) {
         if let Ok(mut unlocked) = self.unlocked_collections.lock() {
             unlocked.clear();
         }
+        self.advance_access_epoch();
     }
 
     // Drops the live connection so restore can replace the database file. The
@@ -434,6 +518,7 @@ impl DatabaseState {
     // recovers any interrupted file conversion.
     pub(crate) fn close_connection(&self) -> Result<(), String> {
         self.clear_unlocked_collections();
+        self.advance_session();
         let mut stored = self.lock_connection()?;
         drop(stored.take());
         Ok(())
@@ -740,7 +825,7 @@ pub fn write_profile(connection: &mut Connection, profile: &ProfileInput) -> rus
 
 pub fn read_preferences(connection: &Connection) -> rusqlite::Result<Preferences> {
     connection.query_row(
-        "SELECT theme, density, start_at_login, notes_view, sources_view, collections_view, auto_lock_minutes, semantic_search, auto_tag, summaries, navigation_style, clipboard_clear_seconds, clipboard_exclude_history FROM preferences WHERE id = 1",
+        "SELECT theme, density, start_at_login, notes_view, sources_view, collections_view, auto_lock_minutes, semantic_search, auto_tag, summaries, navigation_style, clipboard_clear_seconds, clipboard_exclude_history, link_details FROM preferences WHERE id = 1",
         [],
         |row| {
             Ok(Preferences {
@@ -757,6 +842,7 @@ pub fn read_preferences(connection: &Connection) -> rusqlite::Result<Preferences
                 summaries: row.get::<_, i64>(9)? != 0,
                 clipboard_clear_seconds: row.get(11)?,
                 clipboard_exclude_history: row.get::<_, i64>(12)? != 0,
+                link_details: row.get::<_, i64>(13)? != 0,
             })
         },
     )
@@ -781,7 +867,7 @@ pub fn write_preferences(
          SET theme = ?1, density = ?2, start_at_login = ?3, notes_view = ?4, sources_view = ?5,
               collections_view = ?6, auto_lock_minutes = ?7, semantic_search = ?8, auto_tag = ?9,
               summaries = ?10, navigation_style = ?11, clipboard_clear_seconds = ?12,
-              clipboard_exclude_history = ?13
+              clipboard_exclude_history = ?13, link_details = ?14
          WHERE id = 1",
         params![
             preferences.theme,
@@ -797,6 +883,7 @@ pub fn write_preferences(
             preferences.navigation_style,
             preferences.clipboard_clear_seconds,
             i64::from(preferences.clipboard_exclude_history),
+            i64::from(preferences.link_details),
         ],
     )?;
 
@@ -1068,7 +1155,7 @@ mod tests {
             .expect("mark password vault version");
         connection.execute("INSERT INTO credentials(id, service, password_nonce, password_ciphertext, created_at, updated_at) VALUES ('credential-1', 'Kept', x'010203', x'040506', '2026-01-01', '2026-01-01')", []).expect("seed credential");
         apply_migrations(&mut connection).expect("upgrade version 10 vault");
-        assert_eq!(read_user_version(&connection), 18);
+        assert_eq!(read_user_version(&connection), 19);
         assert!(table_exists(&connection, "credentials"));
         assert!(table_exists(&connection, "item_search"));
         assert!(table_exists(&connection, "item_versions"));
@@ -1085,7 +1172,7 @@ mod tests {
         apply_migrations(&mut connection).expect("first migration");
         apply_migrations(&mut connection).expect("second migration");
 
-        assert_eq!(read_user_version(&connection), 18);
+        assert_eq!(read_user_version(&connection), 19);
 
         for table in [
             "profile",
@@ -1129,7 +1216,7 @@ mod tests {
         let mut connection = Connection::open_in_memory().expect("open in-memory database");
 
         apply_migrations(&mut connection).expect("first migration");
-        assert_eq!(read_user_version(&connection), 18);
+        assert_eq!(read_user_version(&connection), 19);
 
         // Dropping a table gives the test a way to detect whether the migration ran again.
         connection
@@ -1142,7 +1229,7 @@ mod tests {
             !table_exists(&connection, "preferences"),
             "an up-to-date database must not re-run its migration"
         );
-        assert_eq!(read_user_version(&connection), 18);
+        assert_eq!(read_user_version(&connection), 19);
     }
 
     #[test]
@@ -1165,7 +1252,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 18);
+        assert_eq!(read_user_version(&connection), 19);
         assert_eq!(
             read_preferences(&connection).expect("read preferences"),
             Preferences {
@@ -1182,6 +1269,7 @@ mod tests {
                 summaries: false,
                 clipboard_clear_seconds: 0,
                 clipboard_exclude_history: false,
+                link_details: true,
             }
         );
 
@@ -1240,7 +1328,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 18);
+        assert_eq!(read_user_version(&connection), 19);
         assert!(
             !table_exists(&connection, "starter_collections"),
             "the onboarding table is dropped after the copy"
@@ -1280,6 +1368,7 @@ mod tests {
                 summaries: false,
                 clipboard_clear_seconds: 0,
                 clipboard_exclude_history: false,
+                link_details: true,
             }
         );
     }
@@ -1322,7 +1411,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 18);
+        assert_eq!(read_user_version(&connection), 19);
 
         let (title, content, is_pinned, deleted_at, icon): (
             String,
@@ -1387,7 +1476,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 18);
+        assert_eq!(read_user_version(&connection), 19);
         let collections_view: String = connection
             .query_row(
                 "SELECT collections_view FROM preferences WHERE id = 1",
@@ -1430,7 +1519,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 18);
+        assert_eq!(read_user_version(&connection), 19);
         let (protection, secret_hash): (String, Option<String>) = connection
             .query_row(
                 "SELECT protection, secret_hash FROM collections WHERE id = 'col-old'",
@@ -1489,7 +1578,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 18);
+        assert_eq!(read_user_version(&connection), 19);
         let tags: String = connection
             .query_row("SELECT tags FROM items WHERE id = 'item-1'", [], |row| {
                 row.get(0)
@@ -1702,6 +1791,7 @@ mod tests {
                 summaries: false,
                 clipboard_clear_seconds: 0,
                 clipboard_exclude_history: false,
+                link_details: true,
             }
         );
 

@@ -32,6 +32,7 @@ export type Preferences = {
   summaries: boolean
   clipboardClearSeconds: number
   clipboardExcludeHistory: boolean
+  linkDetails: boolean
 }
 
 export async function loadProfile(): Promise<Profile> {

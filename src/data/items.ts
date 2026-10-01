@@ -62,12 +62,49 @@ export type ItemInput = {
   collectionId?: string | null
   isFavorite?: boolean
   isPinned?: boolean
+  /** `check` (default) stops on an already saved address; `keepBoth` saves anyway. */
+  duplicatePolicy?: DuplicatePolicy
+}
+
+export type DuplicatePolicy = 'check' | 'keepBoth'
+
+export type DuplicateMatch = { item: ItemSummary; reason: 'url' | 'file-content' }
+
+export type CaptureOutcome =
+  | { status: 'saved'; item: VaultItem }
+  | { status: 'duplicate'; matches: DuplicateMatch[]; accessEpoch: number }
+
+export type FileImportPreview = {
+  token: string
+  originalName: string
+  byteSize: number
+  matches: DuplicateMatch[]
+  accessEpoch: number
+}
+
+/** Thrown by `saveItem` and `importFile` when the capture matches saved items. Nothing was saved. */
+export class DuplicateConflictError extends Error {
+  readonly matches: DuplicateMatch[]
+  readonly accessEpoch: number
+
+  constructor(matches: DuplicateMatch[], accessEpoch: number) {
+    super('This is already saved in Kivo.')
+    this.name = 'DuplicateConflictError'
+    this.matches = matches
+    this.accessEpoch = accessEpoch
+  }
+}
+
+function savedItem(outcome: CaptureOutcome): VaultItem {
+  if (outcome.status === 'duplicate') {
+    throw new DuplicateConflictError(outcome.matches, outcome.accessEpoch)
+  }
+  notifyVaultChanged()
+  return outcome.item
 }
 
 export async function saveItem(input: ItemInput): Promise<VaultItem> {
-  const item = await invoke<VaultItem>('save_item', { input })
-  notifyVaultChanged()
-  return item
+  return savedItem(await invoke<CaptureOutcome>('save_item', { input }))
 }
 
 export async function loadItem(id: string): Promise<VaultItem> {
@@ -110,7 +147,31 @@ export async function deleteItemsPermanently(ids: string[]): Promise<void> {
 }
 
 export async function importFile(sourcePath: string): Promise<VaultItem> {
-  return invoke<VaultItem>('import_file', { sourcePath })
+  return savedItem(await invoke<CaptureOutcome>('import_file', { sourcePath }))
+}
+
+/** Stages a picked file and reports saved items with the same contents. Saves nothing. */
+export async function previewFileImport(sourcePath: string): Promise<FileImportPreview> {
+  return invoke<FileImportPreview>('preview_file_import', { sourcePath })
+}
+
+/** Saves the staged file, unless it matches saved items and `duplicatePolicy` is `check`. */
+export async function commitFileImport(
+  token: string,
+  collectionId: string | null,
+  duplicatePolicy: DuplicatePolicy,
+): Promise<CaptureOutcome> {
+  const outcome = await invoke<CaptureOutcome>('commit_file_import', {
+    token,
+    collectionId,
+    duplicatePolicy,
+  })
+  if (outcome.status === 'saved') notifyVaultChanged()
+  return outcome
+}
+
+export async function cancelFileImport(token: string): Promise<void> {
+  return invoke<void>('cancel_file_import', { token })
 }
 
 export async function setItemTags(id: string, tags: string[]): Promise<string[]> {

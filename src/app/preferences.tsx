@@ -43,6 +43,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   summaries: false,
   clipboardClearSeconds: 0,
   clipboardExcludeHistory: false,
+  linkDetails: true,
 }
 
 const FALLBACK_PREFERENCES: PreferencesContextValue = {
@@ -116,6 +117,7 @@ function normalizePreferences(value: Preferences | null | undefined): Preference
       ? value?.clipboardClearSeconds ?? 0
       : 0,
     clipboardExcludeHistory: value?.clipboardExcludeHistory ?? DEFAULT_PREFERENCES.clipboardExcludeHistory,
+    linkDetails: value?.linkDetails ?? DEFAULT_PREFERENCES.linkDetails,
   }
 }
 

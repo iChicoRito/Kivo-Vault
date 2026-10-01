@@ -13,7 +13,7 @@ import { FolderAddIcon, PlusSignIcon } from '@hugeicons/core-free-icons'
 import { useNavigate } from 'react-router-dom'
 
 import { saveCollection } from '../../data/collections'
-import { importFile } from '../../data/items'
+import { useFileImport } from '../files/useFileImport'
 import { pickFile } from '../../data/files'
 import { notifyError, notifySuccess } from '../../lib/feedback'
 import SaveSourceDialog from '../sources/SaveSourceDialog'
@@ -43,6 +43,7 @@ export function QuickAddDialog({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [sourceOpen, setSourceOpen] = useState(false)
+  const { importPaths, dialog: importDialog } = useFileImport()
   // Opened for one action: skip the menu, so it never flashes or shows after cancel.
   const direct = initialAction !== null || initialMode === 'collection'
 
@@ -85,13 +86,17 @@ export function QuickAddDialog({
     setBusy(true)
 
     try {
-      await importFile(path)
-      notifySuccess('File imported')
+      const summary = await importPaths([path])
+      if (summary.failed > 0) {
+        setError(IMPORT_ERROR)
+        notifyError(IMPORT_ERROR)
+        return
+      }
       close()
-      navigate('/files')
-    } catch {
-      setError(IMPORT_ERROR)
-      notifyError(IMPORT_ERROR)
+      if (summary.imported > 0) {
+        notifySuccess('File imported')
+        navigate('/files')
+      }
     } finally {
       setBusy(false)
     }
@@ -221,6 +226,7 @@ export function QuickAddDialog({
         onClose={() => setSourceOpen(false)}
         onSaved={() => setSourceOpen(false)}
       />
+      {importDialog}
     </>
   )
 }

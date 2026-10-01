@@ -22,6 +22,9 @@ pub struct BackupItem {
     pub title: String,
     pub collection: Option<String>,
     pub updated_at: String,
+    /// The same address or file contents is already saved in an accessible
+    /// place in the live vault. Restoring it anyway keeps both.
+    pub already_saved: bool,
 }
 
 /// An opened backup. Dropping it deletes the temp copy and forgets the key.
@@ -86,17 +89,74 @@ fn open_backup(path: &Path, password: Option<&str>) -> Result<OpenedBackup, Stri
     Ok(opened)
 }
 
-pub(crate) fn list_backup_items(path: &Path, password: Option<&str>) -> Result<Vec<BackupItem>, String> {
+/// Lists a backup's items. With `live`, each row also says whether the live
+/// vault already holds the same source address or file contents.
+pub(crate) fn list_backup_items(
+    path: &Path,
+    password: Option<&str>,
+    live: Option<&DatabaseState>,
+) -> Result<Vec<BackupItem>, String> {
     let opened = open_backup(path, password)?;
     let items = portability::read_items_with_ids(opened.connection(), &opened.keys, None, &[])?;
+    let guard = match live {
+        Some(state) => Some(state.require_connection()?),
+        None => None,
+    };
+    let checker = match (live, guard.as_ref().and_then(|guard| guard.as_ref())) {
+        (Some(state), Some(connection)) => {
+            // A locked live vault cannot be compared; rows then show no mark.
+            match encryption::key_if_enabled(connection, state.content_key()) {
+                Ok(key) => Some((state, connection, key, crate::database::locked_collection_ids(connection, state)?)),
+                Err(_) => None,
+            }
+        }
+        _ => None,
+    };
+    let backup_key = opened.keys.require_key().ok();
     Ok(items
         .into_iter()
-        .map(|(id, item)| BackupItem {
-            id,
-            kind: item.kind,
-            title: if item.title.trim().is_empty() { "Untitled".into() } else { item.title },
-            collection: item.collection,
-            updated_at: item.updated_at,
+        .map(|(id, item)| {
+            let already_saved = checker.as_ref().is_some_and(|(state, connection, key, locked)| {
+                match (item.kind.as_str(), &item.file) {
+                    ("source", _) => item
+                        .url
+                        .as_deref()
+                        .and_then(crate::duplicates::canonical_source_url)
+                        .and_then(|canonical| {
+                            crate::duplicates::find_source_matches(connection, key.as_ref(), locked, &canonical, None).ok()
+                        })
+                        .is_some_and(|found| !found.is_empty()),
+                    ("file", Some(file)) => portability::read_source_file(
+                        opened.connection(),
+                        backup_key.as_ref(),
+                        &opened.files_root,
+                        &id,
+                        file,
+                    )
+                    .ok()
+                    .and_then(|bytes| {
+                        crate::duplicates::find_file_matches(
+                            connection,
+                            state.files_dir(),
+                            key.as_ref(),
+                            locked,
+                            &crate::duplicates::hash_bytes(&bytes),
+                            bytes.len() as i64,
+                        )
+                        .ok()
+                    })
+                    .is_some_and(|found| !found.is_empty()),
+                    _ => false,
+                }
+            });
+            BackupItem {
+                id,
+                kind: item.kind,
+                title: if item.title.trim().is_empty() { "Untitled".into() } else { item.title },
+                collection: item.collection,
+                updated_at: item.updated_at,
+                already_saved,
+            }
         })
         .collect())
 }
@@ -140,7 +200,9 @@ pub fn list_backup_contents(
     password: Option<String>,
     state: State<'_, DatabaseState>,
 ) -> Result<Vec<BackupItem>, String> {
-    with_attempt(&state, || list_backup_items(Path::new(&path), password.as_deref()))
+    with_attempt(&state, || {
+        list_backup_items(Path::new(&path), password.as_deref(), Some(state.inner()))
+    })
 }
 
 #[tauri::command]
@@ -234,7 +296,7 @@ mod tests {
         };
         let backup_path = Path::new(&backup.path);
 
-        let listed = list_backup_items(backup_path, None).expect("list");
+        let listed = list_backup_items(backup_path, None, None).expect("list");
         assert_eq!(listed.len(), 2);
         let plan = listed.iter().find(|item| item.id == "note-1").expect("note listed");
         assert_eq!((plan.title.as_str(), plan.collection.as_deref()), ("Plan", Some("Work")));
@@ -270,12 +332,12 @@ mod tests {
         };
         let backup_path = Path::new(&backup.path);
 
-        assert!(list_backup_items(backup_path, None).is_err());
+        assert!(list_backup_items(backup_path, None, None).is_err());
         assert_eq!(
-            list_backup_items(backup_path, Some("wrong password")).unwrap_err(),
+            list_backup_items(backup_path, Some("wrong password"), None).unwrap_err(),
             backup::WRONG_BACKUP_PASSWORD
         );
-        let listed = list_backup_items(backup_path, Some(PASSWORD)).expect("list");
+        let listed = list_backup_items(backup_path, Some(PASSWORD), None).expect("list");
         assert!(listed.iter().any(|item| item.title == "Plan"), "titles are decrypted");
 
         let live = temp.vault("live");
@@ -303,5 +365,45 @@ mod tests {
         assert!(stage.join("kivo.db").is_file());
         drop(opened);
         assert!(!stage.exists());
+    }
+
+    #[test]
+    fn t24_listing_marks_items_the_live_vault_already_has() {
+        let temp = Temp::new("already-saved");
+        let old = temp.vault("old");
+        seed(&old);
+        let backup = {
+            let connection = old.require_connection().expect("connection");
+            backup::create_backup_in(connection.as_ref().expect("initialized"), old.files_dir(), &temp.0.join("backups"))
+                .expect("backup")
+        };
+        let backup_path = Path::new(&backup.path);
+
+        // The live vault has the same file bytes under another name, and no note.
+        let live = temp.vault("live");
+        {
+            let connection = live.require_connection().expect("connection");
+            connection
+                .as_ref()
+                .expect("initialized")
+                .execute_batch(
+                    "INSERT INTO items (id, kind, title, content, tags, created_at, updated_at)
+                       VALUES ('copy', 'file', 'Copy', NULL, '[]', '2026-01-01', '2026-01-01');
+                     INSERT INTO files (item_id, stored_name, original_name, byte_size, imported_at, encrypted)
+                       VALUES ('copy', 'copy.txt', 'other-name.txt', 5, '2026-01-01', 0);",
+                )
+                .expect("seed live");
+        }
+        fs::write(live.files_dir().join("copy.txt"), b"hello").expect("write live file");
+
+        let listed = list_backup_items(backup_path, None, Some(&live)).expect("list");
+        let marked: Vec<(&str, bool)> = listed.iter().map(|item| (item.kind.as_str(), item.already_saved)).collect();
+        assert!(marked.contains(&("file", true)));
+        assert!(marked.contains(&("note", false)));
+
+        // Restoring a marked row is an explicit choice: it still adds a copy.
+        let file_id = listed.iter().find(|item| item.kind == "file").unwrap().id.clone();
+        let report = restore_backup_items(&live, backup_path, None, &[file_id]).expect("restore");
+        assert_eq!(report.imported, 1);
     }
 }

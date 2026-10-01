@@ -31,6 +31,7 @@ const PREFERENCES = {
   summaries: false,
   clipboardClearSeconds: 0,
   clipboardExcludeHistory: false,
+  linkDetails: true,
 } as const
 
 beforeEach(() => {

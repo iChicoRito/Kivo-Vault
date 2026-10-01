@@ -1,5 +1,6 @@
 mod backup;
 mod database;
+mod duplicates;
 mod encryption;
 mod health;
 mod icons;
@@ -53,6 +54,8 @@ pub fn run() {
             let data_dir = app.path().app_local_data_dir()?;
             let database =
                 database::DatabaseState::new(data_dir.join("kivo.db"), data_dir.join("files"));
+            // Files staged for an import decision must not outlive the session.
+            let _ = std::fs::remove_dir_all(database.staging_dir());
 
             // Try migration during startup. Failed attempts remain retryable through the command.
             let _ = database.initialize();
@@ -97,6 +100,9 @@ pub fn run() {
             portability::import_json,
             portability::import_markdown,
             vault::import_file,
+            vault::preview_file_import,
+            vault::commit_file_import,
+            vault::cancel_file_import,
             vault::index_file,
             vault::save_item,
             vault::load_item,

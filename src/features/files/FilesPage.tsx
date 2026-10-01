@@ -33,7 +33,6 @@ import { useSelection } from '../../components/items/useSelection'
 import { ListScrollArea } from '../../components/items/ListScrollArea'
 import { formatSize } from '../../components/items/fileSize'
 import {
-  importFile,
   listItems,
   loadItem,
   moveItemsToCollection,
@@ -46,6 +45,7 @@ import { useVaultChanged } from '../../lib/useVaultChanged'
 import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { startItemDrag } from '../collections/itemDrag'
 import { DialogHeader } from '../../components/DialogHeader'
+import { describeImport, useFileImport } from './useFileImport'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -84,6 +84,7 @@ export function FilesPage() {
   const [loadState, setLoadState] = useState<LoadState>('loading')
   const [attempt, setAttempt] = useState(0)
   const [files, setFiles] = useState<ItemSummary[]>([])
+  const { importPaths, dialog: importDialog } = useFileImport()
 
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -128,20 +129,13 @@ export function FilesPage() {
     setBusy(true)
 
     try {
-      let failed = 0
-
-      for (const path of paths) {
-        try {
-          await importFile(path)
-        } catch {
-          failed += 1
-        }
-      }
+      const summary = await importPaths(paths)
 
       await loadFiles()
 
-      if (failed > 0) notifyError(IMPORT_ERROR)
-      else notifySuccess('File imported')
+      if (summary.failed > 0) notifyError(IMPORT_ERROR)
+      else if (summary.imported === 1 && summary.skipped === 0) notifySuccess('File imported')
+      else if (summary.imported + summary.skipped > 0) notifySuccess(describeImport(summary))
     } finally {
       setBusy(false)
     }
@@ -500,6 +494,7 @@ export function FilesPage() {
       />
         </>
       ) : null}
+      {importDialog}
     </section>
   )
 }

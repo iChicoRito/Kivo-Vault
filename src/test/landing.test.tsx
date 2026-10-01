@@ -66,7 +66,7 @@ describe('demo backend', () => {
   })
 
   it('saves, trashes and restores items', async () => {
-    const created = await demoInvoke<VaultItem>('save_item', {
+    const { item: created } = await demoInvoke<{ item: VaultItem }>('save_item', {
       input: { kind: 'note', title: 'Car insurance', content: '<p>Renew in May</p>' },
     })
     const all = await demoInvoke<ItemSummary[]>('list_items', { filter: null })

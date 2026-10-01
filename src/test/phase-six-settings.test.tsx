@@ -92,9 +92,9 @@ it('restores chosen items from an encrypted backup after its password, grouped b
     if (command === 'pick_backup_source') return Promise.resolve('C:/safe/Kivo Backup')
     if (command === 'inspect_backup') return Promise.resolve(backup)
     if (command === 'list_backup_contents') return Promise.resolve([
-      { id: 'note-1', kind: 'note', title: 'Plan', collection: 'Work', updatedAt: '2026-09-01' },
-      { id: 'note-2', kind: 'note', title: 'Retro', collection: 'Work', updatedAt: '2026-09-02' },
-      { id: 'file-1', kind: 'file', title: 'Lease', collection: null, updatedAt: '2026-09-03' },
+      { id: 'note-1', kind: 'note', title: 'Plan', collection: 'Work', updatedAt: '2026-09-01', alreadySaved: false },
+      { id: 'note-2', kind: 'note', title: 'Retro', collection: 'Work', updatedAt: '2026-09-02', alreadySaved: false },
+      { id: 'file-1', kind: 'file', title: 'Lease', collection: null, updatedAt: '2026-09-03', alreadySaved: true },
     ])
     if (command === 'restore_from_backup') return Promise.resolve({ imported: 2, skipped: [], losses: [] })
     return Promise.resolve(null)
@@ -109,6 +109,10 @@ it('restores chosen items from an encrypted backup after its password, grouped b
   await waitFor(() => expect(getTauriInvoke()).toHaveBeenCalledWith('list_backup_contents', { path: backup.path, password: 'secret' }))
 
   const work = await within(dialog).findByRole('region', { name: 'Work' })
+  // A row the vault already holds is marked and starts unchosen.
+  const loose = within(dialog).getByRole('region', { name: 'Not in a collection' })
+  expect(within(loose).getByText('Already in your vault')).toBeInTheDocument()
+  expect(within(work).queryByText('Already in your vault')).not.toBeInTheDocument()
   fireEvent.click(within(work).getByRole('checkbox', { name: /Work/ }))
   fireEvent.click(within(dialog).getByRole('button', { name: 'Restore 2 items' }))
 

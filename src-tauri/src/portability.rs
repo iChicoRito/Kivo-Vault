@@ -515,18 +515,6 @@ fn read_import_bytes(root: &Path, file: &FileRecord) -> Result<Vec<u8>, &'static
     }
 }
 
-fn store_import_file(
-    connection: &Connection,
-    files_dir: &Path,
-    key: Option<&[u8; 32]>,
-    item_id: &str,
-    root: &Path,
-    file: &FileRecord,
-) -> Result<(), String> {
-    let bytes = read_import_bytes(root, file).map_err(str::to_string)?;
-    store_file_bytes(connection, files_dir, key, item_id, &file.original_name, bytes)
-}
-
 /// Saves file bytes for a new item, encrypted with `key` when there is one.
 fn store_file_bytes(
     connection: &Connection,
@@ -538,6 +526,7 @@ fn store_file_bytes(
 ) -> Result<(), String> {
     let byte_size =
         i64::try_from(bytes.len()).map_err(|_| "Managed file is too large".to_string())?;
+    let digest = crate::duplicates::seal_digest(key, item_id, &crate::duplicates::hash_bytes(&bytes))?;
     let stored_name = fresh_stored_name(connection, original_name)?;
     let (stored_bytes, encrypted) = match key {
         Some(key) => (encryption::encrypt_file(key, item_id, &bytes)?, true),
@@ -547,14 +536,15 @@ fn store_file_bytes(
         .map_err(|error| format!("Could not write imported file: {error}"))?;
     connection
         .execute(
-            "INSERT INTO files (item_id, stored_name, original_name, byte_size, imported_at, encrypted)
-             VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?5)",
+            "INSERT INTO files (item_id, stored_name, original_name, byte_size, imported_at, encrypted, content_digest)
+             VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?5, ?6)",
             params![
                 item_id,
                 stored_name,
                 original_name,
                 byte_size,
-                i64::from(encrypted)
+                i64::from(encrypted),
+                digest
             ],
         )
         .map_err(|error| format!("Could not import file: {error}"))?;
@@ -568,13 +558,18 @@ fn file_label(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+pub(crate) const ALREADY_SAVED: &str = "Already saved in Kivo";
+
 /// Imports Kivo JSON as brand-new items. Existing rows are never merged or
 /// overwritten; unsupported or unreadable inputs are skipped with a reason.
+/// A source whose address, or a file whose contents, is already saved (in an
+/// accessible place, or earlier in the same import) is skipped as a duplicate.
 pub(crate) fn import_json_into(
     connection: &mut Connection,
     files_dir: &Path,
     keys: &ContentKeyState,
     path: &Path,
+    locked: &[String],
 ) -> Result<ImportReport, String> {
     let input = read_import_text(path)?;
     let (document, mut report) = decode_json(&input)?;
@@ -586,14 +581,56 @@ pub(crate) fn import_json_into(
         .transaction()
         .map_err(|error| format!("Could not start the import: {error}"))?;
     let mut seen = HashSet::new();
+    let mut seen_urls = HashSet::new();
+    let mut seen_digests = HashSet::new();
     for item in &document.items {
+        let skip = |report: &mut ImportReport, reason: String| {
+            report.skipped.push(SkippedItem {
+                title: item.title.clone(),
+                reason,
+            })
+        };
+        let mut file_bytes = None;
         if let Some(file) = &item.file {
             if let Some(reason) = file_ref_problem(file, &root, directories_ok, &mut seen) {
-                report.skipped.push(SkippedItem {
-                    title: item.title.clone(),
-                    reason: reason.into(),
-                });
+                skip(&mut report, reason.into());
                 continue;
+            }
+            let bytes = match read_import_bytes(&root, file) {
+                Ok(bytes) => bytes,
+                Err(reason) => {
+                    skip(&mut report, reason.into());
+                    continue;
+                }
+            };
+            let digest = crate::duplicates::hash_bytes(&bytes);
+            let saved = crate::duplicates::find_file_matches(
+                &transaction,
+                files_dir,
+                key.as_ref(),
+                locked,
+                &digest,
+                bytes.len() as i64,
+            )?;
+            if !saved.is_empty() || !seen_digests.insert(digest) {
+                skip(&mut report, ALREADY_SAVED.into());
+                continue;
+            }
+            file_bytes = Some(bytes);
+        }
+        if item.kind == "source" {
+            if let Some(canonical) = item.url.as_deref().and_then(crate::duplicates::canonical_source_url) {
+                let saved = crate::duplicates::find_source_matches(
+                    &transaction,
+                    key.as_ref(),
+                    locked,
+                    &canonical,
+                    None,
+                )?;
+                if !saved.is_empty() || !seen_urls.insert(canonical) {
+                    skip(&mut report, ALREADY_SAVED.into());
+                    continue;
+                }
             }
         }
         let id = match insert_item(&transaction, key.as_ref(), item) {
@@ -607,9 +644,9 @@ pub(crate) fn import_json_into(
             }
         };
         report.imported += 1;
-        if let Some(file) = &item.file {
+        if let (Some(file), Some(bytes)) = (&item.file, file_bytes) {
             if let Err(error) =
-                store_import_file(&transaction, files_dir, key.as_ref(), &id, &root, file)
+                store_file_bytes(&transaction, files_dir, key.as_ref(), &id, &file.original_name, bytes)
             {
                 report.skipped.push(SkippedItem {
                     title: item.title.clone(),
@@ -812,7 +849,7 @@ pub(crate) fn read_items_with_ids(
 
 /// Reads one managed file from another vault's folder (a backup), opening it
 /// with that vault's key when it was stored encrypted.
-fn read_source_file(
+pub(crate) fn read_source_file(
     source: &Connection,
     source_key: Option<&[u8; 32]>,
     source_root: &Path,
@@ -1101,11 +1138,14 @@ pub fn export_vault_json(path: String, state: State<'_, DatabaseState>) -> Resul
 #[tauri::command]
 pub fn import_json(path: String, state: State<'_, DatabaseState>) -> Result<ImportReport, String> {
     let mut guard = state.require_connection()?;
+    let connection = guard.as_mut().expect("checked above");
+    let locked = crate::database::locked_collection_ids(connection, &state)?;
     import_json_into(
-        guard.as_mut().expect("checked above"),
+        connection,
         state.files_dir(),
         state.content_key(),
         Path::new(&path),
+        &locked,
     )
 }
 

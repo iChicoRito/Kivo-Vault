@@ -108,7 +108,7 @@ describe('items data contract', () => {
       isPinned: true,
     }
 
-    getTauriInvoke().mockResolvedValue({ ...NOTE })
+    getTauriInvoke().mockResolvedValue({ status: 'saved', item: { ...NOTE } })
 
     await expect(saveItem(input)).resolves.toEqual(NOTE)
     expect(getTauriInvoke()).toHaveBeenCalledWith('save_item', { input })
@@ -138,7 +138,7 @@ describe('items data contract', () => {
       isPinned: true,
     }
 
-    getTauriInvoke().mockResolvedValue({ ...FILE_ITEM, ...input })
+    getTauriInvoke().mockResolvedValue({ status: 'saved', item: { ...FILE_ITEM, ...input } })
 
     await expect(saveItem(input)).resolves.toEqual({ ...FILE_ITEM, ...input })
     expect(getTauriInvoke()).toHaveBeenCalledWith('save_item', { input })
@@ -247,7 +247,7 @@ describe('items data contract', () => {
   })
 
   it('imports a file through import_file with { sourcePath }', async () => {
-    getTauriInvoke().mockResolvedValue({ ...FILE_ITEM })
+    getTauriInvoke().mockResolvedValue({ status: 'saved', item: { ...FILE_ITEM } })
 
     await expect(importFile('C:\\Users\\marka\\Documents\\Budget 2026.pdf')).resolves.toEqual(
       FILE_ITEM,

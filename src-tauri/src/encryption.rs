@@ -359,6 +359,41 @@ fn version_aad(id: &str) -> Vec<u8> {
 fn file_aad(id: &str) -> Vec<u8> {
     format!("kivo:file:v1:{id}").into_bytes()
 }
+pub fn file_digest_aad(id: &str) -> Vec<u8> {
+    format!("kivo:file-digest:v1:{id}").into_bytes()
+}
+
+/// Seals (or opens) every stored file fingerprint in the same transaction that
+/// flips the files' encrypted flag, so a digest is never readable while its file
+/// is protected. A fingerprint that cannot be opened is cleared; it is derived
+/// data and the next duplicate check computes it again.
+fn convert_digests(connection: &Connection, key: &[u8; 32], encrypt: bool) -> Result<(), String> {
+    let rows: Vec<(String, Vec<u8>)> = {
+        let mut statement = connection
+            .prepare("SELECT item_id, content_digest FROM files WHERE content_digest IS NOT NULL AND encrypted = ?1")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![i64::from(!encrypt)], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?;
+        rows
+    };
+    for (id, stored) in rows {
+        let converted = if encrypt {
+            Some(encrypt_bytes(key, &stored, &file_digest_aad(&id))?)
+        } else {
+            decrypt_bytes(key, &stored, &file_digest_aad(&id)).ok()
+        };
+        connection
+            .execute(
+                "UPDATE files SET content_digest = ?2 WHERE item_id = ?1",
+                params![id, converted],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
 
 pub fn encrypt_file(key: &[u8; 32], id: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
     encrypt_bytes(key, bytes, &file_aad(id))
@@ -735,6 +770,7 @@ pub fn enable(
                 .map_err(|error| error.to_string())?;
         }
         tx.execute("UPDATE index_state SET needs_index=0,indexed_at=NULL,status='pending',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", []).map_err(|error| error.to_string())?;
+        convert_digests(&tx, &key, true)?;
         tx.execute("UPDATE files SET encrypted=1", [])
             .map_err(|error| error.to_string())?;
         swap_files(files_dir, &prepared)?;
@@ -838,6 +874,7 @@ pub fn disable(
         }
         tx.execute("DELETE FROM item_secrets", [])
             .map_err(|error| error.to_string())?;
+        convert_digests(&tx, &key, false)?;
         tx.execute("UPDATE files SET encrypted=0", [])
             .map_err(|error| error.to_string())?;
         tx.execute("UPDATE index_state SET needs_index=1,indexed_at=NULL,status='pending',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", []).map_err(|error| error.to_string())?;
@@ -928,6 +965,7 @@ fn record_password_result<T>(state: &DatabaseState, result: &Result<T, String>) 
 pub fn lock_content_vault(state: State<'_, DatabaseState>) -> Result<(), String> {
     clear_temp_files();
     state.clear_unlocked_collections();
+    state.advance_session();
     state.content_key().clear()
 }
 
@@ -942,6 +980,8 @@ pub fn enable_encryption(
     let key = enable(connection, state.files_dir(), &password);
     record_password_result(&state, &key);
     let key = key?;
+    // A file staged before the switch was staged unencrypted.
+    state.advance_session();
     state.content_key().store(key)?;
     let items: i64 = connection
         .query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0))
@@ -969,6 +1009,7 @@ pub fn disable_encryption(
     );
     record_password_result(&state, &result);
     let result = result?;
+    state.advance_session();
     state.content_key().clear()?;
     Ok(result)
 }
@@ -983,6 +1024,9 @@ pub fn change_master_password(
     state.check_attempt()?;
     let result = change_password(guard.as_mut().expect("checked above"), &current, &next);
     record_password_result(&state, &result);
+    if result.is_ok() {
+        state.advance_session();
+    }
     result
 }
 

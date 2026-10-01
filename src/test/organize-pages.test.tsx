@@ -18,6 +18,9 @@ const itemsMock = vi.hoisted(() => ({
   moveItemsToCollection: vi.fn(),
   trashItems: vi.fn(),
   importFile: vi.fn(),
+  previewFileImport: vi.fn(),
+  commitFileImport: vi.fn(),
+  cancelFileImport: vi.fn(),
   setItemTags: vi.fn(),
 }))
 
@@ -189,6 +192,15 @@ beforeEach(() => {
   itemsMock.trashItems.mockResolvedValue(undefined)
   feedbackMock.trashWithUndo.mockResolvedValue(true)
   itemsMock.importFile.mockResolvedValue({ ...LOADED_FILE })
+  itemsMock.previewFileImport.mockImplementation(async (path: string) => ({
+    token: path,
+    originalName: path,
+    byteSize: 1,
+    matches: [],
+    accessEpoch: 0,
+  }))
+  itemsMock.commitFileImport.mockResolvedValue({ status: 'saved', item: { ...LOADED_FILE } })
+  itemsMock.cancelFileImport.mockResolvedValue(undefined)
   filesMock.pickFile.mockResolvedValue(null)
   filesMock.pickFiles.mockResolvedValue(null)
   filesMock.openItemFile.mockResolvedValue(undefined)
@@ -232,9 +244,9 @@ describe('FilesPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Import files' }))
 
     await waitFor(() =>
-      expect(itemsMock.importFile).toHaveBeenCalledWith('C:\\Docs\\Notes.txt'),
+      expect(itemsMock.commitFileImport).toHaveBeenCalledWith('C:\\Docs\\Notes.txt', null, 'check'),
     )
-    expect(itemsMock.importFile).toHaveBeenCalledWith('C:\\Docs\\Report.pdf')
+    expect(itemsMock.commitFileImport).toHaveBeenCalledWith('C:\\Docs\\Report.pdf', null, 'check')
     await waitFor(() => expect(itemsMock.listItems).toHaveBeenCalledTimes(2))
     expect(itemsMock.listItems).toHaveBeenCalledWith({ kind: 'file' })
   })
@@ -248,12 +260,12 @@ describe('FilesPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Import files' }))
 
     await waitFor(() => expect(filesMock.pickFiles).toHaveBeenCalledTimes(1))
-    expect(itemsMock.importFile).not.toHaveBeenCalled()
+    expect(itemsMock.previewFileImport).not.toHaveBeenCalled()
   })
 
   it('keeps importing the rest when one file fails', async () => {
     filesMock.pickFiles.mockResolvedValue(['C:\\Docs\\Broken.pdf', 'C:\\Docs\\Report.pdf'])
-    itemsMock.importFile.mockRejectedValueOnce(new Error('missing'))
+    itemsMock.previewFileImport.mockRejectedValueOnce(new Error('missing'))
 
     renderInRouter(<FilesPage />)
     await screen.findByRole('heading', { level: 1, name: 'Files', exact: true })
@@ -261,7 +273,7 @@ describe('FilesPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Import files' }))
 
     await waitFor(() =>
-      expect(itemsMock.importFile).toHaveBeenCalledWith('C:\\Docs\\Report.pdf'),
+      expect(itemsMock.commitFileImport).toHaveBeenCalledWith('C:\\Docs\\Report.pdf', null, 'check'),
     )
     await waitFor(() =>
       expect(feedbackMock.notifyError).toHaveBeenCalledWith(
@@ -989,7 +1001,7 @@ describe('QuickAddDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Import file' }))
 
     await waitFor(() =>
-      expect(itemsMock.importFile).toHaveBeenCalledWith('C:\\Docs\\Report.pdf'),
+      expect(itemsMock.commitFileImport).toHaveBeenCalledWith('C:\\Docs\\Report.pdf', null, 'check'),
     )
     await waitFor(() => expect(navigateMock).toHaveBeenCalledWith('/files'))
     expect(onClose).toHaveBeenCalledTimes(1)

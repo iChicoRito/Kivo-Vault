@@ -85,6 +85,8 @@ export async function resetDemoBackend(theme: 'light' | 'dark' = 'dark') {
     summaries: false,
     clipboardClearSeconds: 0,
     clipboardExcludeHistory: false,
+    // The demo has no Rust side to fetch pages safely.
+    linkDetails: false,
   }
 
   const move = collection('Moving house', 'home', 0)
@@ -352,7 +354,7 @@ function handle(command: string, args: Args): unknown {
     case 'load_item':
       return publicItem(findItem(args.id))
     case 'save_item':
-      return saveItem(args.input as ItemInput)
+      return { status: 'saved', item: saveItem(args.input as ItemInput) }
     case 'set_item_pinned':
       updateMany([args.id], () => ({ isPinned: Boolean(args.pinned) }))
       return undefined

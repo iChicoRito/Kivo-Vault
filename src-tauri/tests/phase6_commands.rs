@@ -4,6 +4,8 @@
 mod backup;
 #[path = "../src/database.rs"]
 mod database;
+#[path = "../src/duplicates.rs"]
+mod duplicates;
 #[path = "../src/encryption.rs"]
 mod encryption;
 #[path = "../src/portability.rs"]
@@ -114,7 +116,7 @@ fn import_json_creates_new_rows_and_reports_skipped_items() {
     fs::write(&json_path, serde_json::to_vec(&document).unwrap()).unwrap();
 
     let keys = ContentKeyState::default();
-    let report = portability::import_json_into(&mut connection, &files, &keys, &json_path).unwrap();
+    let report = portability::import_json_into(&mut connection, &files, &keys, &json_path, &[]).unwrap();
 
     assert_eq!(
         report.skipped.len(),
@@ -238,7 +240,7 @@ fn import_json_encrypts_protected_fields_and_skips_the_index() {
 
     let keys = ContentKeyState::default();
     keys.store(key).unwrap();
-    let report = portability::import_json_into(&mut connection, &files, &keys, &json_path).unwrap();
+    let report = portability::import_json_into(&mut connection, &files, &keys, &json_path, &[]).unwrap();
     assert!(report.skipped.is_empty(), "{:?}", report.skipped);
 
     let (id, description, content): (String, String, Option<String>) = connection
@@ -324,4 +326,57 @@ fn create_backup_refuses_a_destination_inside_the_app_data_directory() {
         error.to_lowercase().contains("overlap"),
         "unexpected error: {error}"
     );
+}
+
+#[test]
+fn t24_import_json_skips_addresses_and_files_already_saved() {
+    let workspace = Workspace::new();
+    let files = workspace.path("app/files");
+    fs::create_dir_all(&files).unwrap();
+    let mut connection = migrated(&workspace.path("app/kivo.db"));
+    connection
+        .execute(
+            "INSERT INTO items (id, kind, title, description, url, created_at, updated_at)
+             VALUES ('saved', 'source', 'Saved', '', 'https://example.com/a', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+    let root = workspace.path("import");
+    fs::create_dir_all(root.join("files")).unwrap();
+    fs::write(root.join("files/one.bin"), b"twin").unwrap();
+    fs::write(root.join("files/two.bin"), b"twin").unwrap();
+
+    let item = |kind: &str, title: &str, url: Option<&str>, file: Option<&str>| {
+        serde_json::json!({
+            "kind": kind, "title": title, "description": "", "content": null, "url": url,
+            "collection": null, "tags": [], "isFavorite": false, "isPinned": false,
+            "createdAt": "", "updatedAt": "", "deletedAt": null,
+            "file": file.map(|name| serde_json::json!({ "storedName": name, "originalName": name, "byteSize": 4 }))
+        })
+    };
+    let document = serde_json::json!({
+        "format": 1,
+        "collections": [],
+        "items": [
+            item("source", "Same page", Some("https://EXAMPLE.com/a"), None),
+            item("source", "New page", Some("https://example.com/b"), None),
+            item("source", "New page again", Some("https://example.com/b"), None),
+            item("file", "First twin", None, Some("one.bin")),
+            item("file", "Second twin", None, Some("two.bin")),
+        ]
+    });
+    let json_path = root.join("kivo-vault.json");
+    fs::write(&json_path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+    let report = portability::import_json_into(&mut connection, &files, &ContentKeyState::default(), &json_path, &[])
+        .unwrap();
+
+    assert_eq!(report.imported, 2, "{:?}", report.skipped);
+    let skipped: Vec<&str> = report.skipped.iter().map(|entry| entry.title.as_str()).collect();
+    assert_eq!(skipped, vec!["Same page", "New page again", "Second twin"]);
+    assert!(report.skipped.iter().all(|entry| entry.reason == portability::ALREADY_SAVED));
+    let digest: Vec<u8> = connection
+        .query_row("SELECT content_digest FROM files", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(digest.len(), 32, "imported files get a fingerprint");
 }

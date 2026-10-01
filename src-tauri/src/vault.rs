@@ -11,8 +11,9 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::database::{
     ensure_collection_accessible, ensure_item_accessible, locked_collection_ids, locked_filter_sql,
-    DatabaseState,
+    DatabaseState, PendingImport,
 };
+use crate::duplicates::{self, canonical_source_url};
 use crate::encryption::{self, ProtectedItem};
 use crate::security::{hash_secret, secret_matches};
 
@@ -171,6 +172,57 @@ pub struct ItemInput {
     pub is_favorite: Option<bool>,
     #[serde(default)]
     pub is_pinned: Option<bool>,
+    /// `check` (default) refuses a source whose address is already saved;
+    /// `keepBoth` saves it anyway. Validation and access checks still run.
+    #[serde(default)]
+    pub duplicate_policy: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateMatch {
+    pub item: ItemSummary,
+    /// `url` or `file-content`.
+    pub reason: String,
+}
+
+/// What a capture command did. A duplicate saves nothing and names the items
+/// it matched, with the collection-access epoch the answer belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum CaptureOutcome {
+    #[serde(rename_all = "camelCase")]
+    Saved { item: Item },
+    #[serde(rename_all = "camelCase")]
+    Duplicate {
+        matches: Vec<DuplicateMatch>,
+        access_epoch: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileImportPreview {
+    pub token: String,
+    pub original_name: String,
+    pub byte_size: i64,
+    pub matches: Vec<DuplicateMatch>,
+    pub access_epoch: u64,
+}
+
+fn keeps_both(policy: Option<&str>) -> Result<bool, String> {
+    match policy {
+        None | Some("check") => Ok(false),
+        Some("keepBoth") => Ok(true),
+        Some(_) => Err("Unknown duplicate choice".to_string()),
+    }
+}
+
+/// What `write_item` did: saved under an id, or stopped because the address
+/// matches these live items. A stop writes nothing.
+enum WriteOutcome {
+    Saved(String),
+    Duplicate(Vec<String>),
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -908,7 +960,8 @@ fn write_item(
     connection: &mut Connection,
     input: &ItemInput,
     key: Option<&[u8; 32]>,
-) -> Result<String, String> {
+    duplicate_scope: Option<&[String]>,
+) -> Result<WriteOutcome, String> {
     let title = input.title.trim().to_string();
 
     if title.is_empty() {
@@ -983,6 +1036,8 @@ fn write_item(
         None => None,
     };
 
+    let previous_canonical = stored_url.as_deref().and_then(canonical_source_url);
+
     let (content, url) = match kind.as_str() {
         "note" => (Some(input.content.clone().unwrap_or_default()), None),
         "source" => {
@@ -1008,6 +1063,25 @@ fn write_item(
     let transaction = connection
         .transaction()
         .map_err(|error| format!("Could not save the item: {error}"))?;
+
+    // Checked inside the transaction, under the database lock, so nothing can
+    // save the same address between the check and the write. An edit is only
+    // checked when its address changes, and never against itself.
+    if let (Some(locked), "source") = (duplicate_scope, kind.as_str()) {
+        let canonical = url.as_deref().and_then(canonical_source_url);
+        if let Some(canonical) = canonical.filter(|value| !is_update || previous_canonical.as_ref() != Some(value)) {
+            let ids = duplicates::find_source_matches(
+                &transaction,
+                key,
+                locked,
+                &canonical,
+                input.id.as_deref(),
+            )?;
+            if !ids.is_empty() {
+                return Ok(WriteOutcome::Duplicate(ids));
+            }
+        }
+    }
 
     let old_title = if kind == "note" && is_update {
         let column: String = transaction
@@ -1184,7 +1258,7 @@ fn write_item(
         .commit()
         .map_err(|error| format!("Could not save the item: {error}"))?;
 
-    Ok(id)
+    Ok(WriteOutcome::Saved(id))
 }
 
 fn replace_item_tags(
@@ -1647,12 +1721,23 @@ fn build_stored_name(id: &str, source: &Path) -> String {
     }
 }
 
+/// Where a new managed file's bytes come from: a staged plaintext copy that is
+/// moved into place, or plaintext already in memory (decrypted from an
+/// encrypted staging copy) that is sealed under the new item's id.
+enum ManagedBytes<'a> {
+    Staged(&'a Path),
+    Plain(Vec<u8>),
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_import(
     connection: &mut Connection,
     files_dir: &Path,
-    source: &Path,
+    bytes: ManagedBytes<'_>,
     original_name: &str,
     byte_size: i64,
+    digest: &[u8; 32],
+    collection_id: Option<&str>,
     key: Option<&[u8; 32]>,
 ) -> Result<String, String> {
     let transaction = connection
@@ -1660,7 +1745,7 @@ fn write_import(
         .map_err(|error| format!("Could not import the file: {error}"))?;
 
     let id = new_id(&transaction).map_err(|error| format!("Could not import the file: {error}"))?;
-    let stored_name = build_stored_name(&id, source);
+    let stored_name = build_stored_name(&id, Path::new(original_name));
     let target = files_dir.join(&stored_name);
 
     if target.exists() {
@@ -1672,10 +1757,10 @@ fn write_import(
             "INSERT INTO items
                (id, kind, title, description, content, url, collection_id, is_favorite,
                 created_at, updated_at)
-             VALUES (?1, 'file', ?2, '', NULL, NULL, NULL, 0,
+             VALUES (?1, 'file', ?2, '', NULL, NULL, ?3, 0,
                      strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                      strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-            params![id, original_name],
+            params![id, original_name, collection_id],
         )
         .map_err(|error| format!("Could not import the file: {error}"))?;
 
@@ -1696,9 +1781,16 @@ fn write_import(
 
     transaction
         .execute(
-            "INSERT INTO files (item_id, stored_name, original_name, byte_size, imported_at, encrypted)
-             VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?5)",
-            params![id, stored_name, original_name, byte_size, i64::from(key.is_some())],
+            "INSERT INTO files (item_id, stored_name, original_name, byte_size, imported_at, encrypted, content_digest)
+             VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?5, ?6)",
+            params![
+                id,
+                stored_name,
+                original_name,
+                byte_size,
+                i64::from(key.is_some()),
+                duplicates::seal_digest(key, &id, digest)?
+            ],
         )
         .map_err(|error| format!("Could not import the file: {error}"))?;
 
@@ -1714,23 +1806,22 @@ fn write_import(
     // The transaction holds the rows; the bytes land on disk before the commit.
     // The plaintext size stays in `byte_size` even when the stored bytes are
     // encrypted.
-    let write_result = match key {
-        Some(key) => {
-            // Encryption reads the whole file into memory, so it has a ceiling.
-            // ponytail: whole-file read; stream in chunks if larger files matter.
-            if byte_size as u64 > MAX_ENCRYPTED_IMPORT_BYTES {
-                return Err("This file is too large to import while encryption is on".to_string());
-            }
-            let bytes = fs::read(source)
-                .map_err(|error| format!("Could not read the source file: {error}"))?;
-            let encrypted = encryption::encrypt_file(key, &id, &bytes)
+    let write_result = match (key, bytes) {
+        (Some(key), ManagedBytes::Plain(plain)) => {
+            let encrypted = encryption::encrypt_file(key, &id, &plain)
                 .map_err(|error| format!("Could not import the file: {error}"))?;
             fs::write(&target, &encrypted)
                 .map_err(|error| format!("Could not copy file into managed storage: {error}"))
         }
-        None => fs::copy(source, &target)
-            .map(|_| ())
+        (None, ManagedBytes::Plain(plain)) => fs::write(&target, &plain)
             .map_err(|error| format!("Could not copy file into managed storage: {error}")),
+        // Staging sits next to the managed folder, so a rename is the usual path.
+        (None, ManagedBytes::Staged(staged)) => fs::rename(staged, &target)
+            .or_else(|_| fs::copy(staged, &target).map(|_| ()))
+            .map_err(|error| format!("Could not copy file into managed storage: {error}")),
+        (Some(_), ManagedBytes::Staged(_)) => {
+            return Err("This file was staged before encryption changed. Pick it again.".to_string())
+        }
     };
     if let Err(error) = write_result {
         let _ = fs::remove_file(&target);
@@ -1808,18 +1899,118 @@ fn list_items_with_state(
         .map_err(|error| format!("Could not list the items: {error}"))
 }
 
-fn save_item_with_state(state: &DatabaseState, input: &ItemInput) -> Result<Item, String> {
+#[allow(dead_code)]
+pub(crate) const DUPLICATE_SOURCE: &str = "A source with this address is already saved";
+#[allow(dead_code)]
+pub(crate) const DUPLICATE_FILE: &str = "A file with the same contents is already saved";
+
+/// Summaries for the items a duplicate check matched, with names decrypted.
+/// Only called with ids that passed the locked-collection filter.
+fn duplicate_matches(
+    connection: &Connection,
+    files_dir: &Path,
+    key: Option<&[u8; 32]>,
+    ids: &[String],
+    reason: &str,
+) -> Result<Vec<DuplicateMatch>, String> {
+    let sql = format!(
+        "SELECT {ITEM_SUMMARY_COLUMNS} FROM items i LEFT JOIN files f ON f.item_id = i.id WHERE i.id = ?1"
+    );
+    ids.iter()
+        .map(|id| {
+            let mut item = connection
+                .query_row(&sql, params![id], |row| map_summary_row(row, files_dir))
+                .map_err(|error| format!("Could not read a matching item: {error}"))?;
+            if let Some(key) = key {
+                let secret = encryption::read_secret(connection, key, id)?;
+                if let Some(title) = secret.title {
+                    item.title = title;
+                }
+                if let (Some(name), Some(file)) = (secret.file_name, item.file.as_mut()) {
+                    file.original_name = name;
+                }
+                item.content = secret.content;
+            }
+            Ok(DuplicateMatch {
+                item,
+                reason: reason.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Runs `check` against the current locked collections and returns its matches
+/// with the access epoch they belong to. If a collection locks or unlocks while
+/// it runs, the check runs again, so no answer names an item that just became
+/// hidden.
+fn current_matches(
+    state: &DatabaseState,
+    mut check: impl FnMut(&[String]) -> Result<Vec<DuplicateMatch>, String>,
+    connection: &Connection,
+) -> Result<(Vec<DuplicateMatch>, u64), String> {
+    for _ in 0..3 {
+        let epoch = state.access_epoch();
+        let locked = locked_collection_ids(connection, state)?;
+        let matches = check(&locked)?;
+        if state.access_epoch() == epoch {
+            return Ok((matches, epoch));
+        }
+    }
+    Err("Collections changed while checking for duplicates. Try again.".to_string())
+}
+
+fn capture_item_with_state(state: &DatabaseState, input: &ItemInput) -> Result<CaptureOutcome, String> {
+    let keep_both = keeps_both(input.duplicate_policy.as_deref())?;
     let id = {
-        let mut connection = state.require_connection()?;
-        let connection = connection.as_mut().expect("checked above");
+        let mut guard = state.require_connection()?;
+        let connection = guard.as_mut().expect("checked above");
         let key = encryption::key_if_enabled(connection, state.content_key())?;
         if let Some(id) = input.id.as_deref() {
             ensure_item_accessible(connection, state, id)?;
         }
-        write_item(connection, input, key.as_ref())?
+        let epoch = state.access_epoch();
+        let locked = locked_collection_ids(connection, state)?;
+        let scope = if keep_both { None } else { Some(locked.as_slice()) };
+        match write_item(connection, input, key.as_ref(), scope)? {
+            WriteOutcome::Saved(id) => id,
+            WriteOutcome::Duplicate(ids) => {
+                let files_dir = state.files_dir();
+                let (matches, access_epoch) = if state.access_epoch() == epoch {
+                    (duplicate_matches(connection, files_dir, key.as_ref(), &ids, "url")?, epoch)
+                } else {
+                    let canonical = input.url.as_deref().and_then(canonical_source_url).unwrap_or_default();
+                    current_matches(
+                        state,
+                        |locked| {
+                            let ids = duplicates::find_source_matches(
+                                connection,
+                                key.as_ref(),
+                                locked,
+                                &canonical,
+                                input.id.as_deref(),
+                            )?;
+                            duplicate_matches(connection, files_dir, key.as_ref(), &ids, "url")
+                        },
+                        connection,
+                    )?
+                };
+                return Ok(CaptureOutcome::Duplicate { matches, access_epoch });
+            }
+        }
     };
 
-    load_item_with_state(state, &id)
+    Ok(CaptureOutcome::Saved {
+        item: load_item_with_state(state, &id)?,
+    })
+}
+
+// Kept for Rust callers and tests that expect a plain item.
+#[allow(dead_code)]
+fn save_item_with_state(state: &DatabaseState, input: &ItemInput) -> Result<Item, String> {
+    match capture_item_with_state(state, input)? {
+        CaptureOutcome::Saved { item } => Ok(item),
+        CaptureOutcome::Duplicate { .. } => Err(DUPLICATE_SOURCE.to_string()),
+    }
 }
 
 fn set_item_tags_with_state(
@@ -2588,7 +2779,112 @@ fn source_url_with_state(state: &DatabaseState, id: &str) -> Result<String, Stri
     Ok(url.to_string())
 }
 
-fn import_file_with_state(state: &DatabaseState, source_path: &str) -> Result<Item, String> {
+/// How long a staged file waits for a decision.
+const PENDING_IMPORT_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+const PENDING_GONE: &str = "This file is no longer ready to import. Pick it again.";
+
+fn pending_aad(token: &str) -> Vec<u8> {
+    format!("kivo:pending-import:v1:{token}").into_bytes()
+}
+
+fn random_token() -> Result<String, String> {
+    let bytes = encryption::new_vault_key()?;
+    Ok(bytes[..16].iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Copies the picked file into app-private staging and fingerprints the copy,
+/// so later changes to the original cannot change what gets saved. Encrypted
+/// vaults stage a sealed copy only. Runs without the database lock.
+fn stage_file(
+    state: &DatabaseState,
+    source: &Path,
+    token: &str,
+    key: Option<&[u8; 32]>,
+) -> Result<(PathBuf, i64, [u8; 32]), String> {
+    let dir = state.staging_dir();
+    fs::create_dir_all(&dir).map_err(|error| format!("Could not prepare the file: {error}"))?;
+    let staged = dir.join(token);
+    let result = (|| match key {
+        Some(key) => {
+            // Encryption reads the whole file into memory, so it has a ceiling.
+            // ponytail: whole-file read; stream in chunks if larger files matter.
+            let size = fs::metadata(source)
+                .map_err(|error| format!("Could not read the source file: {error}"))?
+                .len();
+            if size > MAX_ENCRYPTED_IMPORT_BYTES {
+                return Err("This file is too large to import while encryption is on".to_string());
+            }
+            let bytes =
+                fs::read(source).map_err(|error| format!("Could not read the source file: {error}"))?;
+            let digest = duplicates::hash_bytes(&bytes);
+            let sealed = encryption::encrypt_bytes(key, &bytes, &pending_aad(token))?;
+            fs::write(&staged, sealed).map_err(|error| format!("Could not prepare the file: {error}"))?;
+            Ok((bytes.len() as u64, digest))
+        }
+        None => {
+            let input = fs::File::open(source)
+                .map_err(|error| format!("Could not read the source file: {error}"))?;
+            let output = fs::File::create(&staged)
+                .map_err(|error| format!("Could not prepare the file: {error}"))?;
+            let (digest, size) = duplicates::hash_reader(TeeReader { input, output })
+                .map_err(|error| format!("Could not prepare the file: {error}"))?;
+            Ok((size, digest))
+        }
+    })();
+    match result {
+        Ok((size, digest)) => {
+            let size = i64::try_from(size).map_err(|_| "Source file is too large".to_string())?;
+            Ok((staged, size, digest))
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&staged);
+            Err(error)
+        }
+    }
+}
+
+/// Writes everything it reads to `output`, so one pass both copies and hashes.
+struct TeeReader {
+    input: fs::File,
+    output: fs::File,
+}
+
+impl std::io::Read for TeeReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.input.read(buffer)?;
+        std::io::Write::write_all(&mut self.output, &buffer[..read])?;
+        Ok(read)
+    }
+}
+
+fn file_matches(
+    state: &DatabaseState,
+    connection: &Connection,
+    key: Option<&[u8; 32]>,
+    digest: &[u8; 32],
+    byte_size: i64,
+) -> Result<(Vec<DuplicateMatch>, u64), String> {
+    current_matches(
+        state,
+        |locked| {
+            let ids = duplicates::find_file_matches(
+                connection,
+                state.files_dir(),
+                key,
+                locked,
+                digest,
+                byte_size,
+            )?;
+            duplicate_matches(connection, state.files_dir(), key, &ids, "file-content")
+        },
+        connection,
+    )
+}
+
+fn preview_file_import_with_state(
+    state: &DatabaseState,
+    source_path: &str,
+) -> Result<FileImportPreview, String> {
     let source_path = source_path.trim();
 
     if source_path.is_empty() {
@@ -2610,29 +2906,155 @@ fn import_file_with_state(state: &DatabaseState, source_path: &str) -> Result<It
         .map(|name| name.to_string_lossy().into_owned())
         .ok_or_else(|| "Source file is required".to_string())?;
 
-    let byte_size = fs::metadata(source)
-        .map_err(|error| format!("Could not read the source file: {error}"))?
-        .len();
-    let byte_size = i64::try_from(byte_size).map_err(|_| "Source file is too large".to_string())?;
+    let (key, generation) = {
+        let guard = state.require_connection()?;
+        let connection = guard.as_ref().expect("checked above");
+        (
+            encryption::key_if_enabled(connection, state.content_key())?,
+            state.session_generation(),
+        )
+    };
+    let token = random_token()?;
+    let (staged, byte_size, digest) = stage_file(state, source, &token, key.as_ref())?;
+    let pending = PendingImport {
+        token: token.clone(),
+        generation,
+        created: std::time::Instant::now(),
+        staged,
+        encrypted: key.is_some(),
+        original_name: original_name.clone(),
+        byte_size,
+        digest,
+    };
 
-    fs::create_dir_all(state.files_dir())
-        .map_err(|error| format!("Could not create the managed folder: {error}"))?;
+    let guard = state.require_connection()?;
+    let connection = guard.as_ref().expect("checked above");
+    // Staging ran without the lock; a lock, restore, or encryption change in
+    // the meantime makes this copy stale (dropping `pending` deletes it).
+    if state.session_generation() != generation {
+        return Err(PENDING_GONE.to_string());
+    }
+    let (matches, access_epoch) = file_matches(state, connection, key.as_ref(), &digest, byte_size)?;
+    // One staged file at a time; a new preview replaces (and deletes) the old one.
+    *state.pending_import()? = Some(pending);
 
+    Ok(FileImportPreview {
+        token,
+        original_name,
+        byte_size,
+        matches,
+        access_epoch,
+    })
+}
+
+fn commit_file_import_with_state(
+    state: &DatabaseState,
+    token: &str,
+    collection_id: Option<&str>,
+    duplicate_policy: Option<&str>,
+) -> Result<CaptureOutcome, String> {
+    let keep_both = keeps_both(duplicate_policy)?;
     let id = {
-        let mut connection = state.require_connection()?;
-        let connection = connection.as_mut().expect("checked above");
+        let mut guard = state.require_connection()?;
+        let connection = guard.as_mut().expect("checked above");
         let key = encryption::key_if_enabled(connection, state.content_key())?;
+        let mut slot = state.pending_import()?;
+        let fresh = slot.as_ref().is_some_and(|pending| {
+            pending.token == token
+                && pending.generation == state.session_generation()
+                && pending.created.elapsed() < PENDING_IMPORT_TTL
+                && pending.encrypted == key.is_some()
+        });
+        if !fresh {
+            if slot.as_ref().is_some_and(|pending| pending.token == token) {
+                slot.take();
+            }
+            return Err(PENDING_GONE.to_string());
+        }
+
+        let collection_id = collection_id.filter(|value| !value.is_empty());
+        if let Some(collection_id) = collection_id {
+            let exists: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM collections WHERE id = ?1",
+                    params![collection_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("Could not import the file: {error}"))?;
+            if exists == 0 {
+                return Err("Collection does not exist".to_string());
+            }
+            ensure_collection_accessible(connection, state, collection_id)?;
+        }
+
+        let (digest, byte_size) = {
+            let pending = slot.as_ref().expect("checked above");
+            (pending.digest, pending.byte_size)
+        };
+        if !keep_both {
+            let (matches, access_epoch) =
+                file_matches(state, connection, key.as_ref(), &digest, byte_size)?;
+            if !matches.is_empty() {
+                // The staged copy stays for the user's decision.
+                return Ok(CaptureOutcome::Duplicate { matches, access_epoch });
+            }
+        }
+
+        // Owning the pending import means it is deleted however this ends.
+        let pending = slot.take().expect("checked above");
+        fs::create_dir_all(state.files_dir())
+            .map_err(|error| format!("Could not create the managed folder: {error}"))?;
+        let bytes = match key.as_ref() {
+            Some(key) => {
+                let sealed = fs::read(&pending.staged).map_err(|_| PENDING_GONE.to_string())?;
+                ManagedBytes::Plain(encryption::decrypt_bytes(key, &sealed, &pending_aad(token))?)
+            }
+            None => ManagedBytes::Staged(&pending.staged),
+        };
         write_import(
             connection,
             state.files_dir(),
-            source,
-            &original_name,
-            byte_size,
+            bytes,
+            &pending.original_name,
+            pending.byte_size,
+            &pending.digest,
+            collection_id,
             key.as_ref(),
         )?
     };
 
-    load_item_with_state(state, &id)
+    Ok(CaptureOutcome::Saved {
+        item: load_item_with_state(state, &id)?,
+    })
+}
+
+fn cancel_file_import_with_state(state: &DatabaseState, token: &str) -> Result<(), String> {
+    let mut slot = state.pending_import()?;
+    if slot.as_ref().is_some_and(|pending| pending.token == token) {
+        slot.take();
+    }
+    Ok(())
+}
+
+/// The old one-step import, now the same checked flow: it refuses a file whose
+/// contents are already saved instead of bypassing the duplicate check.
+fn import_file_outcome(state: &DatabaseState, source_path: &str) -> Result<CaptureOutcome, String> {
+    let preview = preview_file_import_with_state(state, source_path)?;
+    commit_file_import_with_state(state, &preview.token, None, None)
+}
+
+// Kept for Rust callers and tests that expect a plain item.
+#[allow(dead_code)]
+fn import_file_with_state(state: &DatabaseState, source_path: &str) -> Result<Item, String> {
+    match import_file_outcome(state, source_path)? {
+        CaptureOutcome::Saved { item } => Ok(item),
+        CaptureOutcome::Duplicate { .. } => {
+            if let Ok(mut slot) = state.pending_import() {
+                slot.take();
+            }
+            Err(DUPLICATE_FILE.to_string())
+        }
+    }
 }
 
 fn index_file_with_state(state: &DatabaseState, id: &str) -> Result<IndexState, String> {
@@ -2696,10 +3118,11 @@ fn index_file_with_state(state: &DatabaseState, id: &str) -> Result<IndexState, 
         .map(|_| state_row)
 }
 
-#[tauri::command]
-pub async fn import_file(source_path: String, app: AppHandle) -> Result<Item, String> {
-    let state = app.state::<DatabaseState>();
-    let item = import_file_with_state(state.inner(), &source_path)?;
+/// Starts PDF text extraction for a newly saved file, off the calling thread.
+fn index_new_pdf(app: &AppHandle, outcome: &CaptureOutcome) {
+    let CaptureOutcome::Saved { item } = outcome else {
+        return;
+    };
     if item
         .file
         .as_ref()
@@ -2712,7 +3135,71 @@ pub async fn import_file(source_path: String, app: AppHandle) -> Result<Item, St
             let _ = app.emit("file-index-complete", serde_json::json!({"itemId": id, "status": result.as_ref().map(|row| row.status.as_str()).unwrap_or("failed")}));
         });
     }
-    Ok(item)
+}
+
+fn run_blocking<T: Send + 'static>(
+    job: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> impl std::future::Future<Output = Result<T, String>> {
+    async move {
+        tauri::async_runtime::spawn_blocking(job)
+            .await
+            .map_err(|_| "Could not import the file".to_string())?
+    }
+}
+
+#[tauri::command]
+pub async fn import_file(source_path: String, app: AppHandle) -> Result<CaptureOutcome, String> {
+    let worker = app.clone();
+    let outcome = run_blocking(move || {
+        let state = worker.state::<DatabaseState>();
+        let outcome = import_file_outcome(state.inner(), &source_path);
+        if matches!(outcome, Ok(CaptureOutcome::Duplicate { .. })) {
+            if let Ok(mut slot) = state.pending_import() {
+                slot.take();
+            }
+        }
+        outcome
+    })
+    .await?;
+    index_new_pdf(&app, &outcome);
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub async fn preview_file_import(
+    source_path: String,
+    app: AppHandle,
+) -> Result<FileImportPreview, String> {
+    run_blocking(move || {
+        preview_file_import_with_state(app.state::<DatabaseState>().inner(), &source_path)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn commit_file_import(
+    token: String,
+    collection_id: Option<String>,
+    duplicate_policy: Option<String>,
+    app: AppHandle,
+) -> Result<CaptureOutcome, String> {
+    let worker = app.clone();
+    let outcome = run_blocking(move || {
+        commit_file_import_with_state(
+            worker.state::<DatabaseState>().inner(),
+            &token,
+            collection_id.as_deref(),
+            duplicate_policy.as_deref(),
+        )
+    })
+    .await?;
+    index_new_pdf(&app, &outcome);
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub fn cancel_file_import(token: String, state: State<'_, DatabaseState>) -> Result<(), String> {
+    cancel_file_import_with_state(state.inner(), &token)
 }
 
 #[tauri::command]
@@ -2725,8 +3212,15 @@ pub async fn index_file(item_id: String, app: AppHandle) -> Result<IndexState, S
 }
 
 #[tauri::command]
-pub fn save_item(input: ItemInput, state: State<'_, DatabaseState>) -> Result<Item, String> {
-    save_item_with_state(state.inner(), &input)
+pub fn save_item(input: ItemInput, state: State<'_, DatabaseState>) -> Result<CaptureOutcome, String> {
+    capture_item_with_state(state.inner(), &input)
+}
+
+fn emit_access_changed(app: &AppHandle, state: &DatabaseState) {
+    let _ = app.emit(
+        "collection-access-changed",
+        serde_json::json!({ "accessEpoch": state.access_epoch() }),
+    );
 }
 
 #[tauri::command]
@@ -2855,19 +3349,24 @@ pub fn delete_collection(id: String, state: State<'_, DatabaseState>) -> Result<
 
 /// Closes a collection that was opened with its secret this session.
 #[tauri::command]
-pub fn lock_collection(id: String, state: State<'_, DatabaseState>) {
+pub fn lock_collection(id: String, app: AppHandle, state: State<'_, DatabaseState>) {
     state.lock_collection(&id);
+    emit_access_changed(&app, state.inner());
 }
 
 #[tauri::command]
 pub fn verify_collection_secret(
     id: String,
     secret: String,
+    app: AppHandle,
     state: State<'_, DatabaseState>,
 ) -> Result<bool, String> {
     state.check_attempt()?;
     let matched = verify_collection_secret_with_state(state.inner(), &id, &secret)?;
     state.record_attempt(matched);
+    if matched {
+        emit_access_changed(&app, state.inner());
+    }
     Ok(matched)
 }
 
@@ -3001,6 +3500,7 @@ mod tests {
             collection_id: None,
             is_favorite: None,
             is_pinned: None,
+            duplicate_policy: None,
         }
     }
 
@@ -3015,6 +3515,7 @@ mod tests {
             collection_id: None,
             is_favorite: None,
             is_pinned: None,
+            duplicate_policy: None,
         }
     }
 
@@ -3619,6 +4120,7 @@ mod tests {
                 collection_id: Some("col-move".to_string()),
                 is_favorite: Some(true),
                 is_pinned: None,
+                duplicate_policy: None,
             },
         )
         .expect("rename and move");
@@ -4393,6 +4895,7 @@ mod tests {
                 collection_id: Some("col-files".to_string()),
                 is_favorite: Some(true),
                 is_pinned: Some(true),
+                duplicate_policy: None,
             },
         )
         .expect("update file metadata");
@@ -4425,6 +4928,7 @@ mod tests {
                 collection_id: None,
                 is_favorite: None,
                 is_pinned: None,
+                duplicate_policy: None,
             },
         )
         .expect_err("file creation rejected");
@@ -5315,5 +5819,280 @@ mod tests {
             )
             .expect("read content column");
         assert_eq!(content.as_deref(), Some("disable body"));
+    }
+
+    // ---- T24 phase 3: duplicate detection before capture ----
+
+    fn item_count(state: &DatabaseState) -> i64 {
+        state
+            .require_connection()
+            .expect("lock connection")
+            .as_ref()
+            .expect("connection")
+            .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+            .expect("count items")
+    }
+
+    fn write_source_file(vault: &TempVault, name: &str, bytes: &[u8]) -> String {
+        let dir = vault.root.join("picked");
+        fs::create_dir_all(&dir).expect("create picked folder");
+        let path = dir.join(name);
+        fs::write(&path, bytes).expect("write picked file");
+        path.to_string_lossy().into_owned()
+    }
+
+    fn duplicate_ids(outcome: &CaptureOutcome) -> Vec<String> {
+        match outcome {
+            CaptureOutcome::Duplicate { matches, .. } => {
+                matches.iter().map(|found| found.item.id.clone()).collect()
+            }
+            CaptureOutcome::Saved { .. } => Vec::new(),
+        }
+    }
+
+    fn saved_item(outcome: CaptureOutcome) -> Item {
+        match outcome {
+            CaptureOutcome::Saved { item } => item,
+            CaptureOutcome::Duplicate { .. } => panic!("expected a save, got a duplicate"),
+        }
+    }
+
+    fn import_checked(state: &DatabaseState, path: &str) -> CaptureOutcome {
+        let preview = preview_file_import_with_state(state, path).expect("preview");
+        commit_file_import_with_state(state, &preview.token, None, None).expect("commit")
+    }
+
+    #[test]
+    fn t24_repeated_source_address_is_caught_before_saving() {
+        let vault = TempVault::new("dup-source");
+        let state = vault.state();
+        let first = save_item_with_state(&state, &source_input("First", "https://Example.com/a"))
+            .expect("save first");
+
+        let outcome = capture_item_with_state(&state, &source_input("Again", "https://example.com:443/a"))
+            .expect("capture");
+        assert_eq!(duplicate_ids(&outcome), vec![first.id.clone()]);
+        if let CaptureOutcome::Duplicate { matches, .. } = &outcome {
+            assert_eq!(matches[0].reason, "url");
+            assert_eq!(matches[0].item.title, "First");
+        }
+        assert_eq!(item_count(&state), 1, "a duplicate saves nothing");
+
+        // Different query, path case, or scheme is a different page.
+        for other in ["https://example.com/A", "https://example.com/a?x=1", "http://example.com/a"] {
+            saved_item(capture_item_with_state(&state, &source_input("Other", other)).expect("capture"));
+        }
+
+        let mut keep = source_input("Both", "https://example.com/a");
+        keep.duplicate_policy = Some("keepBoth".to_string());
+        saved_item(capture_item_with_state(&state, &keep).expect("keep both"));
+        assert_eq!(item_count(&state), 5);
+
+        let mut unknown = source_input("Bad", "https://new.example.com");
+        unknown.duplicate_policy = Some("merge".to_string());
+        assert!(capture_item_with_state(&state, &unknown).is_err());
+    }
+
+    #[test]
+    fn t24_source_edits_skip_themselves_but_not_other_sources() {
+        let vault = TempVault::new("dup-edit");
+        let state = vault.state();
+        let one = save_item_with_state(&state, &source_input("One", "https://one.example.com"))
+            .expect("save one");
+        let two = save_item_with_state(&state, &source_input("Two", "https://two.example.com"))
+            .expect("save two");
+
+        let mut rename = source_input("One renamed", "https://one.example.com");
+        rename.id = Some(one.id.clone());
+        saved_item(capture_item_with_state(&state, &rename).expect("rename keeps own url"));
+
+        let mut collide = source_input("One", "https://two.example.com");
+        collide.id = Some(one.id.clone());
+        assert_eq!(
+            duplicate_ids(&capture_item_with_state(&state, &collide).expect("capture")),
+            vec![two.id.clone()]
+        );
+        assert_eq!(
+            load_item_with_state(&state, &one.id).expect("load").url.as_deref(),
+            Some("https://one.example.com"),
+            "the refused edit changed nothing"
+        );
+    }
+
+    #[test]
+    fn t24_trash_and_locked_collections_reveal_no_matches() {
+        let vault = TempVault::new("dup-hidden");
+        let state = vault.state();
+        let trashed = save_item_with_state(&state, &source_input("Old", "https://trash.example.com"))
+            .expect("save");
+        trash_items_with_state(&state, &[trashed.id.clone()]).expect("trash");
+
+        let mut input = collection_input("Private");
+        input.protection = Some("pin".to_string());
+        input.secret = Some("123456".to_string());
+        let private = save_collection_with_state(&state, &input).expect("create locked");
+        let mut hidden = source_input("Hidden", "https://hidden.example.com");
+        hidden.collection_id = Some(private.id.clone());
+        save_item_with_state(&state, &hidden).expect("save hidden");
+        let hidden_file = write_source_file(&vault, "secret.txt", b"hidden bytes");
+        let preview = preview_file_import_with_state(&state, &hidden_file).expect("preview");
+        commit_file_import_with_state(&state, &preview.token, Some(&private.id), None).expect("commit");
+        state.lock_collection(&private.id);
+
+        for url in ["https://trash.example.com", "https://hidden.example.com"] {
+            saved_item(capture_item_with_state(&state, &source_input("New", url)).expect("capture"));
+        }
+        let again = write_source_file(&vault, "copy.txt", b"hidden bytes");
+        let preview = preview_file_import_with_state(&state, &again).expect("preview");
+        assert!(preview.matches.is_empty(), "a locked file is not revealed");
+
+        // Saving into a locked collection is refused at commit.
+        let other = write_source_file(&vault, "other.txt", b"other bytes");
+        let preview = preview_file_import_with_state(&state, &other).expect("preview");
+        assert!(commit_file_import_with_state(&state, &preview.token, Some(&private.id), Some("keepBoth")).is_err());
+    }
+
+    #[test]
+    fn t24_file_contents_not_names_decide_duplicates() {
+        let vault = TempVault::new("dup-file");
+        let state = vault.state();
+        let original = saved_item(import_checked(&state, &write_source_file(&vault, "report.pdf", b"same bytes")));
+
+        let renamed = write_source_file(&vault, "renamed.bin", b"same bytes");
+        let preview = preview_file_import_with_state(&state, &renamed).expect("preview");
+        assert_eq!(preview.byte_size, 10);
+        assert_eq!(preview.matches.len(), 1);
+        assert_eq!(preview.matches[0].item.id, original.id);
+        assert_eq!(preview.matches[0].reason, "file-content");
+        assert_eq!(item_count(&state), 1, "preview saves nothing");
+
+        // A conflict keeps the staged copy for the decision, then Keep both saves one item.
+        let outcome = commit_file_import_with_state(&state, &preview.token, None, None).expect("commit");
+        assert_eq!(duplicate_ids(&outcome), vec![original.id.clone()]);
+        assert_eq!(item_count(&state), 1);
+        let kept = saved_item(
+            commit_file_import_with_state(&state, &preview.token, None, Some("keepBoth")).expect("keep both"),
+        );
+        assert_eq!(item_count(&state), 2);
+        assert_eq!(kept.file.expect("file details").original_name, "renamed.bin");
+
+        // Same name, different bytes: no match.
+        let different = write_source_file(&vault, "report.pdf", b"other byte");
+        assert!(preview_file_import_with_state(&state, &different).expect("preview").matches.is_empty());
+    }
+
+    #[test]
+    fn t24_staged_copy_is_what_gets_saved_and_skip_leaves_nothing() {
+        let vault = TempVault::new("dup-staged");
+        let state = vault.state();
+        let path = write_source_file(&vault, "note.txt", b"checked bytes");
+        let preview = preview_file_import_with_state(&state, &path).expect("preview");
+        fs::write(&path, b"changed after the check").expect("change original");
+
+        let item = saved_item(commit_file_import_with_state(&state, &preview.token, None, None).expect("commit"));
+        let stored = fs::read(state.files_dir().join(
+            state
+                .require_connection()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .query_row("SELECT stored_name FROM files WHERE item_id = ?1", params![item.id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+        ))
+        .expect("read managed file");
+        assert_eq!(stored, b"checked bytes");
+        assert!(commit_file_import_with_state(&state, &preview.token, None, None).is_err(), "a token is used once");
+
+        // Skip: cancel drops the staged copy and saves nothing.
+        let skip = preview_file_import_with_state(&state, &write_source_file(&vault, "skip.txt", b"skip me"))
+            .expect("preview");
+        cancel_file_import_with_state(&state, &skip.token).expect("cancel");
+        assert!(commit_file_import_with_state(&state, &skip.token, None, None).is_err());
+        assert_eq!(item_count(&state), 1);
+        assert_eq!(fs::read_dir(state.staging_dir()).map(|dir| dir.count()).unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn t24_lock_or_restore_invalidates_a_staged_file() {
+        let vault = TempVault::new("dup-stale");
+        let state = vault.state();
+        let preview = preview_file_import_with_state(&state, &write_source_file(&vault, "a.txt", b"stale"))
+            .expect("preview");
+        state.advance_session();
+
+        assert!(commit_file_import_with_state(&state, &preview.token, None, Some("keepBoth")).is_err());
+        assert_eq!(item_count(&state), 0);
+        assert_eq!(fs::read_dir(state.staging_dir()).map(|dir| dir.count()).unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn t24_older_files_get_fingerprints_when_first_checked() {
+        let vault = TempVault::new("dup-backfill");
+        let state = vault.state();
+        let first = saved_item(import_checked(&state, &write_source_file(&vault, "old.txt", b"legacy bytes")));
+        state
+            .require_connection()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .execute("UPDATE files SET content_digest = NULL", [])
+            .unwrap();
+
+        let preview = preview_file_import_with_state(&state, &write_source_file(&vault, "new.txt", b"legacy bytes"))
+            .expect("preview");
+        assert_eq!(preview.matches[0].item.id, first.id);
+        let digest: Vec<u8> = state
+            .require_connection()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .query_row("SELECT content_digest FROM files WHERE item_id = ?1", params![first.id], |row| row.get(0))
+            .unwrap();
+        assert_eq!(digest, duplicates::hash_bytes(b"legacy bytes").to_vec());
+    }
+
+    #[test]
+    fn t24_encrypted_fingerprints_stay_ciphertext_and_survive_toggling() {
+        let vault = TempVault::new("dup-encrypted");
+        let state = vault.state();
+        let plain = saved_item(import_checked(&state, &write_source_file(&vault, "plain.txt", b"secret bytes")));
+        enable_content_encryption(&state, "master-pass");
+
+        let digest_of = |id: &str| -> Vec<u8> {
+            state
+                .require_connection()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .query_row("SELECT content_digest FROM files WHERE item_id = ?1", params![id], |row| row.get(0))
+                .unwrap()
+        };
+        let raw = duplicates::hash_bytes(b"secret bytes").to_vec();
+        assert_ne!(digest_of(&plain.id), raw, "enabling encryption seals the old digest");
+
+        // Encrypted imports stage no plaintext and still match the plain-era file.
+        let preview = preview_file_import_with_state(&state, &write_source_file(&vault, "again.txt", b"secret bytes"))
+            .expect("preview");
+        let staged = fs::read(state.staging_dir().join(&preview.token)).expect("staged copy");
+        assert!(!staged.windows(12).any(|part| part == b"secret bytes"), "staged copy is sealed");
+        assert_eq!(preview.matches.len(), 1);
+        let encrypted = saved_item(
+            commit_file_import_with_state(&state, &preview.token, None, Some("keepBoth")).expect("keep both"),
+        );
+        assert_ne!(digest_of(&encrypted.id), raw);
+        assert_eq!(
+            duplicate_ids(&import_checked(&state, &write_source_file(&vault, "third.txt", b"secret bytes"))).len(),
+            2
+        );
+
+        {
+            let mut connection = state.require_connection().unwrap();
+            encryption::disable(connection.as_mut().unwrap(), state.files_dir(), "master-pass").expect("disable");
+        }
+        state.content_key().clear().unwrap();
+        assert_eq!(digest_of(&plain.id), raw);
+        assert_eq!(digest_of(&encrypted.id), raw);
     }
 }

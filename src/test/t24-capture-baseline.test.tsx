@@ -9,6 +9,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const itemsMock = vi.hoisted(() => ({
   importFile: vi.fn(),
+  previewFileImport: vi.fn(),
+  commitFileImport: vi.fn(),
+  cancelFileImport: vi.fn(),
   listItems: vi.fn(),
   loadItem: vi.fn(),
   moveItemsToCollection: vi.fn(),
@@ -125,6 +128,7 @@ describe('T24 capture baseline: sources', () => {
         collectionId: 'col-1',
         isFavorite: true,
         isPinned: true,
+        duplicatePolicy: 'check',
       }),
     )
   })
@@ -139,26 +143,31 @@ describe('T24 capture baseline: files', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /import files/i })[0])
 
     await waitFor(() => expect(filesMock.pickFiles).toHaveBeenCalledTimes(1))
-    expect(itemsMock.importFile).not.toHaveBeenCalled()
+    expect(itemsMock.previewFileImport).not.toHaveBeenCalled()
     expect(feedbackMock.notifySuccess).not.toHaveBeenCalled()
     expect(feedbackMock.notifyError).not.toHaveBeenCalled()
   })
 
   it('keeps successful imports when a later file in the batch fails', async () => {
     filesMock.pickFiles.mockResolvedValue(['C:/a.pdf', 'C:/b.pdf', 'C:/c.pdf'])
-    itemsMock.importFile
-      .mockResolvedValueOnce(source({ id: 'a', kind: 'file' }))
-      .mockRejectedValueOnce(new Error('unreadable'))
-      .mockResolvedValueOnce(source({ id: 'c', kind: 'file' }))
+    itemsMock.previewFileImport.mockImplementation(async (path: string) => {
+      if (path === 'C:/b.pdf') throw new Error('unreadable')
+      return { token: path, originalName: path, byteSize: 1, matches: [], accessEpoch: 0 }
+    })
+    itemsMock.commitFileImport.mockResolvedValue({ status: 'saved', item: source({ kind: 'file' }) })
     renderFiles()
 
     await screen.findByText('No files yet.')
     fireEvent.click(screen.getAllByRole('button', { name: /import files/i })[0])
 
     await waitFor(() => expect(feedbackMock.notifyError).toHaveBeenCalledTimes(1))
-    expect(itemsMock.importFile.mock.calls.map(([path]) => path)).toEqual([
+    expect(itemsMock.previewFileImport.mock.calls.map(([path]) => path)).toEqual([
       'C:/a.pdf',
       'C:/b.pdf',
+      'C:/c.pdf',
+    ])
+    expect(itemsMock.commitFileImport.mock.calls.map(([token]) => token)).toEqual([
+      'C:/a.pdf',
       'C:/c.pdf',
     ])
     expect(itemsMock.trashItems).not.toHaveBeenCalled()

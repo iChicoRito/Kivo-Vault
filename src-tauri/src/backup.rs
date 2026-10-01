@@ -14,7 +14,7 @@ use crate::database::DatabaseState;
 
 const FORMAT: i64 = 1;
 const MIN_SCHEMA: i64 = 12;
-const MAX_SCHEMA: i64 = 18;
+const MAX_SCHEMA: i64 = 19;
 const DATABASE: &str = "kivo.db";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

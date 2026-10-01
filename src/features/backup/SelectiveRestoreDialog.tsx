@@ -183,6 +183,9 @@ export function SelectiveRestoreDialog({ backup, onClose }: SelectiveRestoreDial
                                       </Checkbox.Control>
                                       <span className="truncate">{item.title}</span>
                                       <span className="shrink-0 text-xs text-muted">{KIND_LABEL[item.kind]}</span>
+                                      {item.alreadySaved ? (
+                                        <span className="shrink-0 text-xs text-muted">Already in your vault</span>
+                                      ) : null}
                                     </Checkbox.Content>
                                   </Checkbox>
                                 </li>

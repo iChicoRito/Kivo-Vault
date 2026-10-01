@@ -71,6 +71,7 @@ const DEFAULT_PREFERENCES: Preferences = {
   summaries: false,
   clipboardClearSeconds: 0,
   clipboardExcludeHistory: false,
+  linkDetails: true,
 }
 
 function createDefaultState(): BrowserPreviewState {
@@ -144,6 +145,9 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
     case 'index_file':
     // Link details go through the Rust safety checks only; the preview never fetches sites itself.
     case 'fetch_link_details':
+    case 'preview_file_import':
+    case 'commit_file_import':
+    case 'cancel_file_import':
       throw new Error('This action needs the Kivo desktop app.')
     case 'initialize_database':
       return undefined as T

@@ -56,7 +56,7 @@ it('shows versions and shortcut reference', async () => {
 
 it('toggles favorite on the open item with Ctrl+D', async () => {
   const item = { id: 'n1', kind: 'note', title: 'Selected', description: '', content: '', url: null, collectionId: null, isFavorite: false, isPinned: false, tags: [], file: null, fileMissing: false, createdAt: '2026-09-24', updatedAt: '2026-09-24' }
-  getTauriInvoke().mockImplementation(async (command: string, args: { input?: typeof item }) => command === 'load_item' ? item : command === 'save_item' ? { ...item, ...args.input } : [])
+  getTauriInvoke().mockImplementation(async (command: string, args: { input?: typeof item }) => command === 'load_item' ? item : command === 'save_item' ? { status: 'saved', item: { ...item, ...args.input } } : [])
   render(<ItemDetailsDialog itemId="n1" onClose={() => undefined} onChanged={() => undefined} />)
   expect(await screen.findByDisplayValue('Selected')).toBeInTheDocument()
   fireEvent.keyDown(window, { key: 'd', ctrlKey: true })

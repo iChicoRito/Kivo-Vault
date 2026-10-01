@@ -17,12 +17,20 @@ const feedbackMock = vi.hoisted(() => ({
   notifyError: vi.fn(),
 }))
 
+const settingsMock = vi.hoisted(() => ({
+  loadPreferences: vi.fn(),
+  savePreferences: vi.fn(),
+}))
+
 vi.mock('../data/items', () => itemsMock)
 vi.mock('../data/linkDetails', () => linkMock)
 vi.mock('../lib/feedback', () => feedbackMock)
+vi.mock('../data/settings', () => settingsMock)
 
 import type { LinkDetails } from '../data/linkDetails'
 import type { VaultItem } from '../data/items'
+import type { ReactNode } from 'react'
+import { DEFAULT_PREFERENCES, PreferencesProvider } from '../app/preferences'
 import { SaveSourceDialog } from '../features/sources/SaveSourceDialog'
 
 function deferred<T>() {
@@ -47,13 +55,24 @@ function details(overrides: Partial<LinkDetails> = {}): LinkDetails {
 const field = (name: string) => screen.getByRole('textbox', { name }) as HTMLInputElement
 const type = (name: string, value: string) => fireEvent.change(field(name), { target: { value } })
 
-function renderNew() {
-  return render(<SaveSourceDialog itemId={null} open onClose={vi.fn()} onSaved={vi.fn()} />)
+function withPreferences(linkDetails = true) {
+  return ({ children }: { children: ReactNode }) => (
+    <PreferencesProvider initialPreferences={{ ...DEFAULT_PREFERENCES, linkDetails }}>
+      {children}
+    </PreferencesProvider>
+  )
+}
+
+function renderNew(linkDetails = true) {
+  return render(<SaveSourceDialog itemId={null} open onClose={vi.fn()} onSaved={vi.fn()} />, {
+    wrapper: withPreferences(linkDetails),
+  })
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   itemsMock.saveItem.mockResolvedValue({})
+  settingsMock.savePreferences.mockImplementation(async (value) => value)
 })
 
 describe('SaveSourceDialog link details', () => {
@@ -204,7 +223,9 @@ describe('SaveSourceDialog link details', () => {
     }
     itemsMock.loadItem.mockResolvedValue(item)
     linkMock.fetchLinkDetails.mockResolvedValue(details({ title: 'New page title' }))
-    render(<SaveSourceDialog itemId="s1" open onClose={vi.fn()} onSaved={vi.fn()} />)
+    render(<SaveSourceDialog itemId="s1" open onClose={vi.fn()} onSaved={vi.fn()} />, {
+      wrapper: withPreferences(),
+    })
 
     await waitFor(() => expect(field('Title')).toHaveValue('Saved title'))
     await new Promise((resolve) => setTimeout(resolve, 500))
@@ -216,7 +237,7 @@ describe('SaveSourceDialog link details', () => {
     expect(field('Title')).toHaveValue('Saved title')
   })
 
-  it('explains the network request and sends nothing when turned off', async () => {
+  it('explains the network request and saves the switch as a preference', async () => {
     renderNew()
 
     expect(
@@ -226,12 +247,19 @@ describe('SaveSourceDialog link details', () => {
     expect(toggle).toBeChecked()
 
     fireEvent.click(toggle)
-    expect(toggle).not.toBeChecked()
+    await waitFor(() => expect(toggle).not.toBeChecked())
+    expect(settingsMock.savePreferences).toHaveBeenCalledWith(
+      expect.objectContaining({ linkDetails: false }),
+    )
+  })
+
+  it('sends nothing when the saved preference is off', async () => {
+    renderNew(false)
+
+    expect(screen.getByRole('switch', { name: 'Fetch link details automatically' })).not.toBeChecked()
     type('Address', 'https://example.com/a')
     await new Promise((resolve) => setTimeout(resolve, 500))
 
     expect(linkMock.fetchLinkDetails).not.toHaveBeenCalled()
-    // The choice lasts for the session; turn it back on for other tests.
-    fireEvent.click(toggle)
   })
 })

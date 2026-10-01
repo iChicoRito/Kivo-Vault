@@ -47,6 +47,8 @@ export type BackupItem = {
   title: string
   collection: string | null
   updatedAt: string
+  /** The same address or file contents is already saved; restoring it keeps both. */
+  alreadySaved: boolean
 }
 
 export const listBackupContents = (path: string, password?: string) =>

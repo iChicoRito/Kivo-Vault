@@ -10,7 +10,7 @@ import {
 } from '@hugeicons/core-free-icons'
 import { useNavigate } from 'react-router-dom'
 
-import { importFile } from '../../data/items'
+import { useFileImport } from '../files/useFileImport'
 import { pickFile } from '../../data/files'
 import SaveSourceDialog from '../sources/SaveSourceDialog'
 import QuickAddDialog from './QuickAddDialog'
@@ -27,6 +27,7 @@ export function QuickAddMenu({ onAdded }: QuickAddMenuProps) {
   const [busy, setBusy] = useState(false)
   const [sourceOpen, setSourceOpen] = useState(false)
   const [collectionOpen, setCollectionOpen] = useState(false)
+  const { importPaths, dialog: importDialog } = useFileImport()
 
   function handleNewNote() {
     onAdded?.()
@@ -50,11 +51,15 @@ export function QuickAddMenu({ onAdded }: QuickAddMenuProps) {
     setBusy(true)
 
     try {
-      await importFile(path)
-      onAdded?.()
-      navigate('/files')
-    } catch {
-      setError(IMPORT_ERROR)
+      const summary = await importPaths([path])
+      if (summary.failed > 0) {
+        setError(IMPORT_ERROR)
+        return
+      }
+      if (summary.imported > 0) {
+        onAdded?.()
+        navigate('/files')
+      }
     } finally {
       setBusy(false)
     }
@@ -133,6 +138,7 @@ export function QuickAddMenu({ onAdded }: QuickAddMenuProps) {
         open={collectionOpen}
         onClose={() => setCollectionOpen(false)}
       />
+      {importDialog}
     </div>
   )
 }

@@ -13,9 +13,17 @@ import {
 import { Link01Icon } from '@hugeicons/core-free-icons'
 
 import { notifyError, notifySuccess } from '../../lib/feedback'
-import { loadItem, saveItem, type VaultItem } from '../../data/items'
+import {
+  DuplicateConflictError,
+  loadItem,
+  saveItem,
+  type DuplicatePolicy,
+  type VaultItem,
+} from '../../data/items'
 import { fetchLinkDetails, type LinkDetails } from '../../data/linkDetails'
 import { DialogHeader } from '../../components/DialogHeader'
+import { usePreferences } from '../../app/preferences'
+import { DuplicateDialog, type DuplicateConflict } from '../items/DuplicateDialog'
 
 const ADDRESS_REQUIRED = 'Address is required.'
 const ADDRESS_INVALID = 'Address must start with http:// or https://.'
@@ -24,9 +32,6 @@ const SAVE_ERROR = 'Kivo could not save this source. Try again.'
 const LOAD_ERROR = 'Kivo could not load this source.'
 const DETAILS_ERROR = 'Kivo could not fetch details for this link. You can type them yourself.'
 const DETAILS_DELAY_MS = 400
-
-// ponytail: remembered for this session only; phase 3 moves it into saved preferences.
-let fetchDetailsSetting = true
 
 function isWebAddress(value: string) {
   try {
@@ -63,7 +68,9 @@ export function SaveSourceDialog({ open, onClose, itemId, onSaved }: SaveSourceD
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(false)
   const [loaded, setLoaded] = useState<VaultItem | null>(null)
-  const [autoFetch, setAutoFetch] = useState(fetchDetailsSetting)
+  const [conflict, setConflict] = useState<DuplicateConflict | null>(null)
+  const { preferences, updatePreferences } = usePreferences()
+  const autoFetch = preferences.linkDetails
   const [detailsStatus, setDetailsStatus] = useState<'idle' | 'loading' | 'error'>('idle')
   const [retryCount, setRetryCount] = useState(0)
   // Each address change, close, or save starts a new generation; older answers are dropped.
@@ -179,7 +186,7 @@ export function SaveSourceDialog({ open, onClose, itemId, onSaved }: SaveSourceD
     return Object.keys(next).length === 0
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(duplicatePolicy: DuplicatePolicy = 'check') {
     setFormError(null)
     if (!validate()) return
 
@@ -199,11 +206,22 @@ export function SaveSourceDialog({ open, onClose, itemId, onSaved }: SaveSourceD
         collectionId: loaded?.collectionId ?? null,
         isFavorite: loaded?.isFavorite ?? false,
         isPinned: loaded?.isPinned ?? false,
+        duplicatePolicy,
       })
       notifySuccess('Source saved')
       onSaved()
       onClose()
-    } catch {
+    } catch (error) {
+      if (error instanceof DuplicateConflictError) {
+        // The draft stays as typed while the user decides.
+        setConflict({
+          name: address.trim(),
+          kind: 'link',
+          matches: error.matches,
+          accessEpoch: error.accessEpoch,
+        })
+        return
+      }
       setFormError(SAVE_ERROR)
       notifyError(SAVE_ERROR)
     } finally {
@@ -212,147 +230,165 @@ export function SaveSourceDialog({ open, onClose, itemId, onSaved }: SaveSourceD
   }
 
   return (
-    <Modal
-      isOpen={open}
-      onOpenChange={(isOpen) => {
-        if (!isOpen) onClose()
-      }}
-    >
-      <Modal.Backdrop>
-        <Modal.Container>
-          <Modal.Dialog>
-            <DialogHeader
-              description="Save a link with a title and a short note."
-              icon={Link01Icon}
-              title={itemId ? 'Edit source' : 'New source'}
-            />
+    <>
+      <Modal
+        isOpen={open}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) onClose()
+        }}
+      >
+        <Modal.Backdrop>
+          <Modal.Container>
+            <Modal.Dialog>
+              <DialogHeader
+                description="Save a link with a title and a short note."
+                icon={Link01Icon}
+                title={itemId ? 'Edit source' : 'New source'}
+              />
 
-            <Modal.Body className="grid gap-4">
-              {loading ? (
-                <div
-                  aria-label="Loading source fields"
-                  className="grid gap-4"
-                  role="status"
-                >
-                  <span className="sr-only">Loading source fields</span>
-                  {Array.from({ length: 3 }, (_, index) => (
-                    <div key={index} aria-hidden="true" className="grid gap-2">
-                      <Skeleton className="h-4 w-24" />
-                      <Skeleton className="h-9 w-full" />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <form
-                  className="grid gap-4"
-                  id="save-source-form"
-                  noValidate
-                  onSubmit={(event) => {
-                    event.preventDefault()
-                    void handleSubmit()
-                  }}
-                >
-                  <TextField
-                    isRequired
-                    isInvalid={errors.address !== undefined}
-                    type="url"
-                    value={address}
-                    onChange={(value) => {
-                      addressTouched.current = true
-                      setDetailsStatus('idle')
-                      setAddress(value)
-                      setErrors((current) => ({ ...current, address: undefined }))
+              <Modal.Body className="grid gap-4">
+                {loading ? (
+                  <div aria-label="Loading source fields" className="grid gap-4" role="status">
+                    <span className="sr-only">Loading source fields</span>
+                    {Array.from({ length: 3 }, (_, index) => (
+                      <div key={index} aria-hidden="true" className="grid gap-2">
+                        <Skeleton className="h-4 w-24" />
+                        <Skeleton className="h-9 w-full" />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <form
+                    className="grid gap-4"
+                    id="save-source-form"
+                    noValidate
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      void handleSubmit()
                     }}
                   >
-                    <Label>Address</Label>
-                    <Input fullWidth placeholder="https://example.com" variant="secondary" />
-                    {errors.address ? <FieldError>{errors.address}</FieldError> : null}
-                  </TextField>
-
-                  {detailsStatus === 'loading' ? (
-                    <Typography className="text-muted" role="status" type="body-sm">
-                      Fetching link details...
-                    </Typography>
-                  ) : null}
-                  {detailsStatus === 'error' ? (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Typography className="text-muted" role="status" type="body-sm">
-                        {DETAILS_ERROR}
-                      </Typography>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onPress={() => setRetryCount((count) => count + 1)}
-                      >
-                        Retry
-                      </Button>
-                    </div>
-                  ) : null}
-
-                  <TextField
-                    isRequired
-                    isInvalid={errors.title !== undefined}
-                    value={title}
-                    onChange={(value) => {
-                      setTitle(value)
-                      setErrors((current) => ({ ...current, title: undefined }))
-                    }}
-                  >
-                    <Label>Title</Label>
-                    <Input fullWidth variant="secondary" />
-                    {errors.title ? <FieldError>{errors.title}</FieldError> : null}
-                  </TextField>
-
-                  <TextField value={description} onChange={setDescription}>
-                    <Label>Description</Label>
-                    <Input fullWidth variant="secondary" />
-                  </TextField>
-
-                  <div className="grid gap-1">
-                    <Switch
-                      aria-describedby="source-link-details-hint"
-                      className="w-full"
-                      isSelected={autoFetch}
-                      onChange={(enabled) => {
-                        fetchDetailsSetting = enabled
-                        setAutoFetch(enabled)
-                        if (!enabled) cancelDetails()
+                    <TextField
+                      isRequired
+                      isInvalid={errors.address !== undefined}
+                      type="url"
+                      value={address}
+                      onChange={(value) => {
+                        addressTouched.current = true
+                        setDetailsStatus('idle')
+                        setAddress(value)
+                        setErrors((current) => ({
+                          ...current,
+                          address: undefined,
+                        }))
                       }}
                     >
-                      <Switch.Content className="w-full justify-between">
-                        <span className="font-medium">Fetch link details automatically</span>
-                        <Switch.Control>
-                          <Switch.Thumb />
-                        </Switch.Control>
-                      </Switch.Content>
-                    </Switch>
-                    <Typography className="text-muted" id="source-link-details-hint" type="body-sm">
-                      Pasting a link contacts that website to read its title and description. No
-                      cookies or logins are sent.
-                    </Typography>
-                  </div>
-                </form>
-              )}
+                      <Label>Address</Label>
+                      <Input fullWidth placeholder="https://example.com" variant="secondary" />
+                      {errors.address ? <FieldError>{errors.address}</FieldError> : null}
+                    </TextField>
 
-              {formError ? (
-                <Typography className="font-semibold text-danger" role="alert" type="body">
-                  {formError}
-                </Typography>
-              ) : null}
-            </Modal.Body>
+                    {detailsStatus === 'loading' ? (
+                      <Typography className="text-muted" role="status" type="body-sm">
+                        Fetching link details...
+                      </Typography>
+                    ) : null}
+                    {detailsStatus === 'error' ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Typography className="text-muted" role="status" type="body-sm">
+                          {DETAILS_ERROR}
+                        </Typography>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onPress={() => setRetryCount((count) => count + 1)}
+                        >
+                          Retry
+                        </Button>
+                      </div>
+                    ) : null}
 
-            <Modal.Footer>
-              <Button variant="secondary" onPress={onClose}>
-                Cancel
-              </Button>
-              <Button isDisabled={busy || loading} onPress={() => void handleSubmit()}>
-                Save
-              </Button>
-            </Modal.Footer>
-          </Modal.Dialog>
-        </Modal.Container>
-      </Modal.Backdrop>
-    </Modal>
+                    <TextField
+                      isRequired
+                      isInvalid={errors.title !== undefined}
+                      value={title}
+                      onChange={(value) => {
+                        setTitle(value)
+                        setErrors((current) => ({
+                          ...current,
+                          title: undefined,
+                        }))
+                      }}
+                    >
+                      <Label>Title</Label>
+                      <Input fullWidth variant="secondary" />
+                      {errors.title ? <FieldError>{errors.title}</FieldError> : null}
+                    </TextField>
+
+                    <TextField value={description} onChange={setDescription}>
+                      <Label>Description</Label>
+                      <Input fullWidth variant="secondary" />
+                    </TextField>
+
+                    <div className="grid gap-1">
+                      <Switch
+                        aria-describedby="source-link-details-hint"
+                        className="w-full"
+                        isSelected={autoFetch}
+                        onChange={(enabled) => {
+                          if (!enabled) cancelDetails()
+                          void updatePreferences({
+                            linkDetails: enabled,
+                          }).catch(() => notifyError('Kivo could not save this setting.'))
+                        }}
+                      >
+                        <Switch.Content className="w-full justify-between">
+                          <span className="font-medium">Fetch link details automatically</span>
+                          <Switch.Control>
+                            <Switch.Thumb />
+                          </Switch.Control>
+                        </Switch.Content>
+                      </Switch>
+                      <Typography
+                        className="text-muted"
+                        id="source-link-details-hint"
+                        type="body-sm"
+                      >
+                        Pasting a link contacts that website to read its title and description. No
+                        cookies or logins are sent.
+                      </Typography>
+                    </div>
+                  </form>
+                )}
+
+                {formError ? (
+                  <Typography className="font-semibold text-danger" role="alert" type="body">
+                    {formError}
+                  </Typography>
+                ) : null}
+              </Modal.Body>
+
+              <Modal.Footer>
+                <Button variant="secondary" onPress={onClose}>
+                  Cancel
+                </Button>
+                <Button isDisabled={busy || loading} onPress={() => void handleSubmit()}>
+                  Save
+                </Button>
+              </Modal.Footer>
+            </Modal.Dialog>
+          </Modal.Container>
+        </Modal.Backdrop>
+      </Modal>
+      <DuplicateDialog
+        conflict={conflict}
+        onDecision={(decision) => {
+          setConflict(null)
+          if (decision === 'keepBoth') void handleSubmit('keepBoth')
+          // Open existing and Skip save nothing; the draft is dropped.
+          else onClose()
+        }}
+      />
+    </>
   )
 }
 

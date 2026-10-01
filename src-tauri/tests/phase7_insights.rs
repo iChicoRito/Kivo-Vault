@@ -2,6 +2,8 @@
 
 #[path = "../src/database.rs"]
 mod database;
+#[path = "../src/duplicates.rs"]
+mod duplicates;
 #[path = "../src/encryption.rs"]
 mod encryption;
 #[path = "../src/insights.rs"]

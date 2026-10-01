@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Button, Checkbox, Input, Label, Modal, TextField, Typography } from '@heroui/react'
+import { Button, Checkbox, Input, Label, Modal, TextArea, TextField, Typography } from '@heroui/react'
 import { DatabaseRestoreIcon } from '@hugeicons/core-free-icons'
 
 import { DialogHeader } from '../../components/DialogHeader'
-import { listBackupContents, restoreFromBackup, type BackupInfo, type BackupItem } from '../../data/backup'
+import {
+  listBackupContents,
+  restoreFromBackup,
+  type BackupInfo,
+  type BackupItem,
+  type BackupUnlock,
+} from '../../data/backup'
 import type { ImportReport } from '../../data/portability'
 
 export type SelectiveRestoreDialogProps = {
@@ -30,6 +36,10 @@ function plural(count: number, word: string) {
  */
 export function SelectiveRestoreDialog({ backup, onClose }: SelectiveRestoreDialogProps) {
   const [password, setPassword] = useState('')
+  const [kit, setKit] = useState('')
+  const [useKit, setUseKit] = useState(false)
+  // How the backup was opened, reused for the restore. Cleared on close.
+  const [opened, setOpened] = useState<BackupUnlock | undefined>(undefined)
   const [items, setItems] = useState<BackupItem[] | null>(null)
   const [chosen, setChosen] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
@@ -37,12 +47,13 @@ export function SelectiveRestoreDialog({ backup, onClose }: SelectiveRestoreDial
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  async function load(pass?: string) {
+  async function load(unlock?: BackupUnlock) {
     if (!backup) return
     setError(null)
     setBusy(true)
     try {
-      setItems(await listBackupContents(backup.path, pass))
+      setItems(await listBackupContents(backup.path, unlock))
+      setOpened(unlock)
     } catch (reason) {
       setError(errorText(reason, 'Kivo could not open this backup. Nothing was changed.'))
     } finally {
@@ -58,6 +69,9 @@ export function SelectiveRestoreDialog({ backup, onClose }: SelectiveRestoreDial
     setReport(null)
     setError(null)
     setPassword('')
+    setKit('')
+    setUseKit(false)
+    setOpened(undefined)
     if (backup && !backup.encrypted) void load()
   }, [backup]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -87,11 +101,15 @@ export function SelectiveRestoreDialog({ backup, onClose }: SelectiveRestoreDial
 
   function unlock(event: FormEvent) {
     event.preventDefault()
+    if (useKit) {
+      if (!kit.trim()) return setError('Paste your recovery key.')
+      return void load({ recoveryKey: kit })
+    }
     if (!password) {
       setError('Enter the Master Password this backup was made with.')
       return
     }
-    void load(password)
+    void load({ password })
   }
 
   async function restore() {
@@ -100,7 +118,7 @@ export function SelectiveRestoreDialog({ backup, onClose }: SelectiveRestoreDial
     setBusy(true)
     try {
       // The password stays only while this dialog is open; closing it clears it.
-      setReport(await restoreFromBackup(backup.path, [...chosen], backup.encrypted ? password : undefined))
+      setReport(await restoreFromBackup(backup.path, [...chosen], backup.encrypted ? opened : undefined))
     } catch (reason) {
       setError(errorText(reason, 'Kivo could not restore these items. Nothing was changed.'))
     } finally {
@@ -129,13 +147,36 @@ export function SelectiveRestoreDialog({ backup, onClose }: SelectiveRestoreDial
             <Modal.Body className="grid gap-4">
               {locked ? (
                 <form className="grid gap-3" noValidate onSubmit={unlock}>
-                  <TextField className="max-w-sm" type="password" value={password} onChange={setPassword}>
-                    <Label>Master Password</Label>
-                    <Input autoComplete="current-password" autoFocus />
-                  </TextField>
+                  {useKit ? (
+                    <TextField value={kit} onChange={setKit}>
+                      <Label>Recovery key</Label>
+                      <TextArea autoComplete="off" autoFocus placeholder="KIVO-RECOVERY-V1:..." spellCheck={false} />
+                    </TextField>
+                  ) : (
+                    <TextField className="max-w-sm" type="password" value={password} onChange={setPassword}>
+                      <Label>Master Password</Label>
+                      <Input autoComplete="current-password" autoFocus />
+                    </TextField>
+                  )}
                   <Typography color="muted" type="body-sm">
-                    This backup is encrypted. Use the Master Password it was made with.
+                    {useKit
+                      ? 'Use the Master Password recovery kit that was active when this backup was made.'
+                      : backup?.recoveryAvailable
+                        ? 'This backup is encrypted. Use the Master Password it was made with, or your recovery kit.'
+                        : 'This backup is encrypted. Use the Master Password it was made with.'}
                   </Typography>
+                  {backup?.recoveryAvailable ? (
+                    <Button
+                      className="justify-self-start"
+                      variant="ghost"
+                      onPress={() => {
+                        setUseKit((value) => !value)
+                        setError(null)
+                      }}
+                    >
+                      {useKit ? 'Use the Master Password instead' : 'Forgot it? Use recovery kit'}
+                    </Button>
+                  ) : null}
                   <Button className="justify-self-start" isDisabled={busy} type="submit">
                     {busy ? 'Opening...' : 'Open backup'}
                   </Button>

@@ -10,24 +10,21 @@ use std::time::{Duration, Instant};
 
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroizing;
 
 use crate::database::{DatabaseState, PendingRecovery};
 use crate::encryption::{self, new_vault_key};
-use crate::key_slots::{self, DataKey, VaultScope};
+#[cfg(test)]
+use crate::key_slots::{KIT_TYPO, MAX_KIT_INPUT};
+use crate::key_slots::{self, format_kit, parse_kit, DataKey, VaultScope};
 use crate::passwords::{self, VaultKeyState};
 
-const KIT_PREFIX: &str = "KIVO-RECOVERY-V1";
-const MAX_KIT_INPUT: usize = 8 * 1024;
 const DRAFT_TTL: Duration = Duration::from_secs(5 * 60);
 
 const WRONG_PASSWORD: &str = "That password is not correct";
 const WRONG_KIT: &str = "That recovery key does not open this vault";
-const KIT_TYPO: &str = "That recovery key has a typo. Check each character and try again.";
-const KIT_FORMAT: &str = "That is not a Kivo recovery key. It starts with KIVO-RECOVERY-V1.";
 const DRAFT_GONE: &str = "This recovery kit setup has ended. Start again.";
 const NOT_ACTIVE: &str = "That recovery kit is not the active one for this vault";
 
@@ -57,71 +54,6 @@ fn parse_scope(scope: &str) -> Result<VaultScope, String> {
         "passwords" => Ok(VaultScope::Passwords),
         _ => Err("Unknown vault".to_string()),
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn checksum(body: &str) -> String {
-    hex(&Sha256::digest(body.as_bytes())[..4])
-}
-
-/// `KIVO-RECOVERY-V1:<scope>:<vault-id>:<recovery-id>:<secret-hex>:<checksum>`
-pub(crate) fn format_kit(scope: VaultScope, vault_id: &str, recovery_id: &str, secret: &DataKey) -> String {
-    let body = format!("{KIT_PREFIX}:{}:{vault_id}:{recovery_id}:{}", scope.as_str(), hex(secret));
-    let sum = checksum(&body);
-    format!("{body}:{sum}")
-}
-
-pub(crate) struct Kit {
-    pub scope: VaultScope,
-    pub vault_id: String,
-    pub recovery_id: String,
-    pub secret: Zeroizing<DataKey>,
-}
-
-fn is_hex(value: &str, len: usize) -> bool {
-    value.len() == len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-/// Reads a kit line from what the user typed or pasted (the whole kit file is
-/// fine). Letter case and surrounding spaces do not matter; anything else must
-/// match exactly. The checksum only catches typing mistakes; the vault itself
-/// proves the key.
-pub(crate) fn parse_kit(input: &str) -> Result<Kit, String> {
-    if input.len() > MAX_KIT_INPUT {
-        return Err(KIT_FORMAT.to_string());
-    }
-    let line = input
-        .lines()
-        .map(str::trim)
-        .find(|line| line.to_ascii_uppercase().starts_with(KIT_PREFIX))
-        .ok_or_else(|| KIT_FORMAT.to_string())?;
-    let line = Zeroizing::new(line.to_ascii_lowercase());
-    let fields: Vec<&str> = line.split(':').collect();
-    if fields.len() != 6 || fields[0] != KIT_PREFIX.to_ascii_lowercase() {
-        return Err(KIT_FORMAT.to_string());
-    }
-    let scope = parse_scope(fields[1]).map_err(|_| KIT_FORMAT.to_string())?;
-    if !is_hex(fields[2], 32) || !is_hex(fields[3], 32) || !is_hex(fields[4], 64) || !is_hex(fields[5], 8) {
-        return Err(KIT_FORMAT.to_string());
-    }
-    let body = format!("{KIT_PREFIX}:{}:{}:{}:{}", fields[1], fields[2], fields[3], fields[4]);
-    if checksum(&body) != fields[5] {
-        return Err(KIT_TYPO.to_string());
-    }
-    let mut secret = Zeroizing::new([0u8; 32]);
-    for (index, chunk) in fields[4].as_bytes().chunks(2).enumerate() {
-        let pair = std::str::from_utf8(chunk).map_err(|_| KIT_FORMAT.to_string())?;
-        secret[index] = u8::from_str_radix(pair, 16).map_err(|_| KIT_FORMAT.to_string())?;
-    }
-    Ok(Kit {
-        scope,
-        vault_id: fields[2].to_string(),
-        recovery_id: fields[3].to_string(),
-        secret,
-    })
 }
 
 fn available(connection: &Connection, scope: VaultScope) -> Result<bool, String> {

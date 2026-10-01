@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use tauri::State;
 
-use crate::backup;
+use crate::backup::{self, BackupUnlock};
 use crate::database::{apply_migrations, DatabaseState};
 use crate::encryption::{self, ContentKeyState};
 use crate::portability::{self, ImportReport};
@@ -51,14 +51,23 @@ impl OpenedBackup {
     }
 }
 
-fn open_backup(path: &Path, password: Option<&str>) -> Result<OpenedBackup, String> {
+/// Opens a backup with its Master Password, or (format 3) a content recovery
+/// kit. A kit-opened backup keeps the recovered content key only inside the
+/// returned value, for reading its encrypted items; it is cleared on drop.
+fn open_backup(path: &Path, password: Option<&str>, recovery_key: Option<&str>) -> Result<OpenedBackup, String> {
     let info = backup::inspect_backup_at(path);
     if !info.valid {
         return Err(format!("This backup has problems: {}", info.problems.join("; ")));
     }
+    let mut recovered = None;
     let (stage, files_root) = if info.encrypted {
-        let password = password.ok_or("Enter the Master Password this backup was made with.")?;
-        let stage = backup::open_sealed_backup(path, password)?;
+        let unlock = match (recovery_key, password) {
+            (Some(kit), _) => BackupUnlock::Recovery(kit),
+            (None, Some(password)) => BackupUnlock::Password(password),
+            (None, None) => return Err("Enter the Master Password this backup was made with.".into()),
+        };
+        let (stage, content_key) = backup::open_sealed_backup_with(path, &unlock)?;
+        recovered = content_key;
         (stage.clone(), stage)
     } else {
         let stage = backup::temp_stage("pick")?;
@@ -80,9 +89,19 @@ fn open_backup(path: &Path, password: Option<&str>) -> Result<OpenedBackup, Stri
         .map_err(|error| format!("Could not read the backup: {error}"))?;
     apply_migrations(&mut connection).map_err(|error| format!("Could not read the backup: {error}"))?;
     if encryption::is_enabled(&connection)? {
-        let password = password.ok_or("Enter the Master Password this backup was made with.")?;
-        let key = encryption::unlock(&connection, password)?
-            .ok_or(backup::WRONG_BACKUP_PASSWORD)?;
+        let key = match (recovered.as_deref(), password) {
+            // The kit opened this vault's own content key; make sure it fits.
+            (Some(key), _) => {
+                let (identity, check) = crate::key_slots::read_identity(&connection, crate::key_slots::VaultScope::Content)?
+                    .ok_or(backup::WRONG_BACKUP_KIT)?;
+                if !crate::key_slots::key_check_matches(&identity, key, &check) {
+                    return Err(backup::WRONG_BACKUP_KIT.into());
+                }
+                *key
+            }
+            (None, Some(password)) => encryption::unlock(&connection, password)?.ok_or(backup::WRONG_BACKUP_PASSWORD)?,
+            (None, None) => return Err("Enter the Master Password this backup was made with.".into()),
+        };
         opened.keys.store(key)?;
     }
     opened.connection = Some(connection);
@@ -94,9 +113,10 @@ fn open_backup(path: &Path, password: Option<&str>) -> Result<OpenedBackup, Stri
 pub(crate) fn list_backup_items(
     path: &Path,
     password: Option<&str>,
+    recovery_key: Option<&str>,
     live: Option<&DatabaseState>,
 ) -> Result<Vec<BackupItem>, String> {
-    let opened = open_backup(path, password)?;
+    let opened = open_backup(path, password, recovery_key)?;
     let items = portability::read_items_with_ids(opened.connection(), &opened.keys, None, &[])?;
     let guard = match live {
         Some(state) => Some(state.require_connection()?),
@@ -165,12 +185,13 @@ pub(crate) fn restore_backup_items(
     state: &DatabaseState,
     path: &Path,
     password: Option<&str>,
+    recovery_key: Option<&str>,
     ids: &[String],
 ) -> Result<ImportReport, String> {
     if ids.is_empty() {
         return Ok(ImportReport::default());
     }
-    let opened = open_backup(path, password)?;
+    let opened = open_backup(path, password, recovery_key)?;
     let mut connection = state.require_connection()?;
     portability::copy_items_from(
         connection.as_mut().expect("checked above"),
@@ -187,7 +208,7 @@ pub(crate) fn restore_backup_items(
 fn with_attempt<T>(state: &DatabaseState, result: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     state.check_attempt()?;
     let result = result();
-    let wrong = matches!(&result, Err(error) if error.starts_with("That Master Password"));
+    let wrong = matches!(&result, Err(error) if error.starts_with("That Master Password") || error.starts_with("That recovery key"));
     if wrong || result.is_ok() {
         state.record_attempt(!wrong);
     }
@@ -198,10 +219,11 @@ fn with_attempt<T>(state: &DatabaseState, result: impl FnOnce() -> Result<T, Str
 pub fn list_backup_contents(
     path: String,
     password: Option<String>,
+    recovery_key: Option<String>,
     state: State<'_, DatabaseState>,
 ) -> Result<Vec<BackupItem>, String> {
     with_attempt(&state, || {
-        list_backup_items(Path::new(&path), password.as_deref(), Some(state.inner()))
+        list_backup_items(Path::new(&path), password.as_deref(), recovery_key.as_deref(), Some(state.inner()))
     })
 }
 
@@ -209,11 +231,12 @@ pub fn list_backup_contents(
 pub fn restore_from_backup(
     path: String,
     password: Option<String>,
+    recovery_key: Option<String>,
     ids: Vec<String>,
     state: State<'_, DatabaseState>,
 ) -> Result<ImportReport, String> {
     with_attempt(&state, || {
-        restore_backup_items(&state, Path::new(&path), password.as_deref(), &ids)
+        restore_backup_items(&state, Path::new(&path), password.as_deref(), recovery_key.as_deref(), &ids)
     })
 }
 
@@ -296,13 +319,13 @@ mod tests {
         };
         let backup_path = Path::new(&backup.path);
 
-        let listed = list_backup_items(backup_path, None, None).expect("list");
+        let listed = list_backup_items(backup_path, None, None, None).expect("list");
         assert_eq!(listed.len(), 2);
         let plan = listed.iter().find(|item| item.id == "note-1").expect("note listed");
         assert_eq!((plan.title.as_str(), plan.collection.as_deref()), ("Plan", Some("Work")));
 
         let live = temp.vault("live");
-        let report = restore_backup_items(&live, backup_path, None, &["note-1".into(), "file-1".into()])
+        let report = restore_backup_items(&live, backup_path, None, None, &["note-1".into(), "file-1".into()])
             .expect("restore");
         assert_eq!(report.imported, 2, "{:?}", report.skipped);
         let items = live_items(&live);
@@ -332,16 +355,16 @@ mod tests {
         };
         let backup_path = Path::new(&backup.path);
 
-        assert!(list_backup_items(backup_path, None, None).is_err());
+        assert!(list_backup_items(backup_path, None, None, None).is_err());
         assert_eq!(
-            list_backup_items(backup_path, Some("wrong password"), None).unwrap_err(),
+            list_backup_items(backup_path, Some("wrong password"), None, None).unwrap_err(),
             backup::WRONG_BACKUP_PASSWORD
         );
-        let listed = list_backup_items(backup_path, Some(PASSWORD), None).expect("list");
+        let listed = list_backup_items(backup_path, Some(PASSWORD), None, None).expect("list");
         assert!(listed.iter().any(|item| item.title == "Plan"), "titles are decrypted");
 
         let live = temp.vault("live");
-        let report = restore_backup_items(&live, backup_path, Some(PASSWORD), &["file-1".into()])
+        let report = restore_backup_items(&live, backup_path, Some(PASSWORD), None, &["file-1".into()])
             .expect("restore");
         assert_eq!(report.imported, 1, "{:?}", report.skipped);
         let items = live_items(&live);
@@ -360,7 +383,7 @@ mod tests {
             backup::create_backup_in(connection.as_ref().expect("initialized"), old.files_dir(), &temp.0.join("backups"))
                 .expect("backup")
         };
-        let opened = open_backup(Path::new(&backup.path), None).expect("open");
+        let opened = open_backup(Path::new(&backup.path), None, None).expect("open");
         let stage = opened.stage.clone();
         assert!(stage.join("kivo.db").is_file());
         drop(opened);
@@ -396,14 +419,43 @@ mod tests {
         }
         fs::write(live.files_dir().join("copy.txt"), b"hello").expect("write live file");
 
-        let listed = list_backup_items(backup_path, None, Some(&live)).expect("list");
+        let listed = list_backup_items(backup_path, None, None, Some(&live)).expect("list");
         let marked: Vec<(&str, bool)> = listed.iter().map(|item| (item.kind.as_str(), item.already_saved)).collect();
         assert!(marked.contains(&("file", true)));
         assert!(marked.contains(&("note", false)));
 
         // Restoring a marked row is an explicit choice: it still adds a copy.
         let file_id = listed.iter().find(|item| item.kind == "file").unwrap().id.clone();
-        let report = restore_backup_items(&live, backup_path, None, &[file_id]).expect("restore");
+        let report = restore_backup_items(&live, backup_path, None, None, &[file_id]).expect("restore");
         assert_eq!(report.imported, 1);
+    }
+
+    #[test]
+    fn t24_a_recovery_kit_lists_and_restores_items_from_a_new_encrypted_backup() {
+        let temp = Temp::new("kit");
+        let old = temp.vault("old");
+        seed(&old);
+        encrypt(&old);
+        let draft = crate::recovery::begin_with_state(&old, "content", PASSWORD).expect("begin kit");
+        crate::recovery::confirm_with_state(&old, &draft.token, &draft.recovery_key).expect("confirm kit");
+        let backup = {
+            let connection = old.require_connection().expect("connection");
+            backup::create_sealed_backup_in(connection.as_ref().expect("initialized"), old.files_dir(), &temp.0.join("backups"), PASSWORD)
+                .expect("sealed backup")
+        };
+        let backup_path = Path::new(&backup.path);
+        assert!(backup.recovery_available);
+
+        let listed = list_backup_items(backup_path, None, Some(&draft.recovery_key), None).expect("list with the kit");
+        assert!(listed.iter().any(|item| item.title == "Plan"), "encrypted titles open with the kit");
+
+        let live = temp.vault("live");
+        let report = restore_backup_items(&live, backup_path, None, Some(&draft.recovery_key), &["note-1".into()])
+            .expect("restore with the kit");
+        assert_eq!(report.imported, 1, "{:?}", report.skipped);
+        assert!(live_items(&live).iter().any(|(_, item)| item.title == "Plan"));
+
+        let wrong = crate::key_slots::format_kit(crate::key_slots::VaultScope::Content, &"a".repeat(32), &"b".repeat(32), &[1; 32]);
+        assert_eq!(list_backup_items(backup_path, None, Some(&wrong), None).err().as_deref(), Some(backup::WRONG_BACKUP_KIT));
     }
 }

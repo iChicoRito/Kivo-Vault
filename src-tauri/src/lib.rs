@@ -20,18 +20,20 @@ mod vault;
 fn restore_backup(
     path: String,
     password: Option<String>,
+    recovery_key: Option<String>,
     state: tauri::State<'_, database::DatabaseState>,
     vault: tauri::State<'_, passwords::VaultKeyState>,
 ) -> Result<backup::RestoreSummary, String> {
-    // The restored database has its own vault salt, so the old key must not stay loaded.
+    // The restored database has its own vault keys, so the old key must not stay loaded.
     vault.clear();
     state.check_attempt()?;
-    let result = backup::restore_with_password(
-        state.inner(),
-        std::path::Path::new(&path),
-        password.as_deref(),
-    );
-    let wrong = matches!(&result, Err(error) if error.starts_with("That Master Password"));
+    let unlock = match (&recovery_key, &password) {
+        (Some(kit), _) => Some(backup::BackupUnlock::Recovery(kit)),
+        (None, Some(password)) => Some(backup::BackupUnlock::Password(password)),
+        (None, None) => None,
+    };
+    let result = backup::restore_with_unlock(state.inner(), std::path::Path::new(&path), unlock.as_ref());
+    let wrong = matches!(&result, Err(error) if error.starts_with("That Master Password") || error.starts_with("That recovery key"));
     if wrong || result.is_ok() {
         state.record_attempt(!wrong);
     }

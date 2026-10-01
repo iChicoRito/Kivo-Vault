@@ -13,6 +13,16 @@ export type BackupInfo = {
   problems: string[]
   /** Sealed with the Master Password; counts are hidden until restore. */
   encrypted?: boolean
+  /** A Master Password recovery kit active when it was made can also open it. */
+  recoveryAvailable?: boolean
+}
+
+/** How an encrypted backup is opened: its Master Password, or a recovery kit. */
+export type BackupUnlock = { password: string } | { recoveryKey: string }
+
+function unlockArgs(unlock?: BackupUnlock) {
+  if (!unlock) return {}
+  return 'recoveryKey' in unlock ? { recoveryKey: unlock.recoveryKey } : { password: unlock.password }
 }
 
 export type RestoreSummary = { itemCount: number; fileCount: number; safetyCopyPath: string }
@@ -25,8 +35,8 @@ export const createBackupNow = (folder: string | null, password?: string) =>
   invoke<BackupInfo>('create_backup_now', password ? { folder, password } : { folder })
 export const pickBackupSource = () => invoke<string | null>('pick_backup_source')
 export const inspectBackup = (path: string) => invoke<BackupInfo>('inspect_backup', { path })
-export const restoreBackup = (path: string, password?: string) =>
-  invoke<RestoreSummary>('restore_backup', password ? { path, password } : { path })
+export const restoreBackup = (path: string, unlock?: BackupUnlock) =>
+  invoke<RestoreSummary>('restore_backup', { path, ...unlockArgs(unlock) })
 
 export type HealthProblemKind = 'missing_file' | 'stray_file' | 'damaged_item' | 'damaged_credential'
 export type HealthProblem = { kind: HealthProblemKind; id: string; label: string }
@@ -51,14 +61,11 @@ export type BackupItem = {
   alreadySaved: boolean
 }
 
-export const listBackupContents = (path: string, password?: string) =>
-  invoke<BackupItem[]>('list_backup_contents', password ? { path, password } : { path })
+export const listBackupContents = (path: string, unlock?: BackupUnlock) =>
+  invoke<BackupItem[]>('list_backup_contents', { path, ...unlockArgs(unlock) })
 /** Adds the chosen backup items to this vault as new copies. */
-export const restoreFromBackup = async (path: string, ids: string[], password?: string) => {
-  const report = await invoke<ImportReport>(
-    'restore_from_backup',
-    password ? { path, password, ids } : { path, ids },
-  )
+export const restoreFromBackup = async (path: string, ids: string[], unlock?: BackupUnlock) => {
+  const report = await invoke<ImportReport>('restore_from_backup', { path, ...unlockArgs(unlock), ids })
   notifyVaultChanged()
   return report
 }

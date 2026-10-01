@@ -9,6 +9,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::encryption::{decrypt_bytes, encrypt_bytes, new_vault_key};
@@ -138,13 +139,19 @@ pub fn wrap_with_password(
     data_key: &DataKey,
     password: &str,
 ) -> Result<String, String> {
+    wrap_key_with_password(&identity.slot_aad("password", slot_id), data_key, password)
+}
+
+/// The same password envelope for any key, bound to the caller's `aad`
+/// (encrypted backups use their own AAD domain).
+pub fn wrap_key_with_password(aad: &[u8], data_key: &DataKey, password: &str) -> Result<String, String> {
     if password.trim().is_empty() {
         return Err("Password is required".to_string());
     }
     let salt = new_vault_key()?;
     let salt = &salt[..SALT_LEN];
     let wrapping = password_wrapping_key(password, salt)?;
-    let sealed = encrypt_bytes(&wrapping, data_key, &identity.slot_aad("password", slot_id))?;
+    let sealed = encrypt_bytes(&wrapping, data_key, aad)?;
     serde_json::to_string(&KeyEnvelope {
         version: ENVELOPE_VERSION,
         method: "password".to_string(),
@@ -164,6 +171,11 @@ pub fn unwrap_with_password(
     envelope_json: &str,
     password: &str,
 ) -> Result<Option<DataKey>, String> {
+    unwrap_key_with_password(&identity.slot_aad("password", slot_id), envelope_json, password)
+}
+
+/// Opens an envelope made by `wrap_key_with_password` with the same `aad`.
+pub fn unwrap_key_with_password(aad: &[u8], envelope_json: &str, password: &str) -> Result<Option<DataKey>, String> {
     if envelope_json.len() > MAX_ENVELOPE_JSON {
         return Err(DAMAGED.to_string());
     }
@@ -185,7 +197,7 @@ pub fn unwrap_with_password(
         return Err(DAMAGED.to_string());
     }
     let wrapping = password_wrapping_key(password, &salt)?;
-    let Ok(plain) = decrypt_bytes(&wrapping, &sealed, &identity.slot_aad("password", slot_id)) else {
+    let Ok(plain) = decrypt_bytes(&wrapping, &sealed, aad) else {
         return Ok(None);
     };
     let plain = Zeroizing::new(plain);
@@ -249,6 +261,86 @@ pub fn make_key_check(identity: &VaultIdentity, data_key: &DataKey) -> Result<Ve
 
 pub fn key_check_matches(identity: &VaultIdentity, data_key: &DataKey, stored: &[u8]) -> bool {
     decrypt_bytes(data_key, stored, &identity.check_aad()).is_ok_and(|plain| plain == KEY_CHECK_PLAINTEXT)
+}
+
+// ---- Recovery kit text ----
+
+pub const KIT_PREFIX: &str = "KIVO-RECOVERY-V1";
+pub const MAX_KIT_INPUT: usize = 8 * 1024;
+pub const KIT_TYPO: &str = "That recovery key has a typo. Check each character and try again.";
+pub const KIT_FORMAT: &str = "That is not a Kivo recovery key. It starts with KIVO-RECOVERY-V1.";
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn kit_checksum(body: &str) -> String {
+    hex(&Sha256::digest(body.as_bytes())[..4])
+}
+
+fn parse_kit_scope(scope: &str) -> Option<VaultScope> {
+    match scope {
+        "content" => Some(VaultScope::Content),
+        "passwords" => Some(VaultScope::Passwords),
+        _ => None,
+    }
+}
+
+/// `KIVO-RECOVERY-V1:<scope>:<vault-id>:<recovery-id>:<secret-hex>:<checksum>`
+pub fn format_kit(scope: VaultScope, vault_id: &str, recovery_id: &str, secret: &DataKey) -> String {
+    let body = format!("{KIT_PREFIX}:{}:{vault_id}:{recovery_id}:{}", scope.as_str(), hex(secret));
+    let sum = kit_checksum(&body);
+    format!("{body}:{sum}")
+}
+
+pub struct Kit {
+    pub scope: VaultScope,
+    pub vault_id: String,
+    pub recovery_id: String,
+    pub secret: Zeroizing<DataKey>,
+}
+
+fn is_hex(value: &str, len: usize) -> bool {
+    value.len() == len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Reads a kit line from what the user typed or pasted (the whole kit file is
+/// fine). Letter case and surrounding spaces do not matter; anything else must
+/// match exactly. The checksum only catches typing mistakes; the vault itself
+/// proves the key.
+pub fn parse_kit(input: &str) -> Result<Kit, String> {
+    if input.len() > MAX_KIT_INPUT {
+        return Err(KIT_FORMAT.to_string());
+    }
+    let line = input
+        .lines()
+        .map(str::trim)
+        .find(|line| line.to_ascii_uppercase().starts_with(KIT_PREFIX))
+        .ok_or_else(|| KIT_FORMAT.to_string())?;
+    let line = Zeroizing::new(line.to_ascii_lowercase());
+    let fields: Vec<&str> = line.split(':').collect();
+    if fields.len() != 6 || fields[0] != KIT_PREFIX.to_ascii_lowercase() {
+        return Err(KIT_FORMAT.to_string());
+    }
+    let scope = parse_kit_scope(fields[1]).ok_or_else(|| KIT_FORMAT.to_string())?;
+    if !is_hex(fields[2], 32) || !is_hex(fields[3], 32) || !is_hex(fields[4], 64) || !is_hex(fields[5], 8) {
+        return Err(KIT_FORMAT.to_string());
+    }
+    let body = format!("{KIT_PREFIX}:{}:{}:{}:{}", fields[1], fields[2], fields[3], fields[4]);
+    if kit_checksum(&body) != fields[5] {
+        return Err(KIT_TYPO.to_string());
+    }
+    let mut secret = Zeroizing::new([0u8; 32]);
+    for (index, chunk) in fields[4].as_bytes().chunks(2).enumerate() {
+        let pair = std::str::from_utf8(chunk).map_err(|_| KIT_FORMAT.to_string())?;
+        secret[index] = u8::from_str_radix(pair, 16).map_err(|_| KIT_FORMAT.to_string())?;
+    }
+    Ok(Kit {
+        scope,
+        vault_id: fields[2].to_string(),
+        recovery_id: fields[3].to_string(),
+        secret,
+    })
 }
 
 // ---- Storage ----

@@ -11,6 +11,8 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::database::DatabaseState;
+use crate::key_slots::{self, DataKey, VaultIdentity, VaultScope};
+use zeroize::Zeroizing;
 
 const FORMAT: i64 = 1;
 const MIN_SCHEMA: i64 = 12;
@@ -30,6 +32,9 @@ pub struct BackupInfo {
     pub problems: Vec<String>,
     /// Sealed with the Master Password. Counts stay hidden until restore.
     pub encrypted: bool,
+    /// A content recovery kit that was active when the backup was made can
+    /// also open it (format 3 only). Not proof the backup is intact.
+    pub recovery_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -390,6 +395,7 @@ pub fn inspect_backup_at(path: &Path) -> BackupInfo {
         valid: false,
         problems: Vec::new(),
         encrypted: false,
+        recovery_available: false,
     };
     let result = if path.join(SEALED_HEADER).exists() {
         inspect_sealed(path, &mut info)
@@ -652,11 +658,98 @@ pub(crate) fn restore_into(state: &DatabaseState, path: &Path) -> Result<Restore
     }
 }
 
-// Encrypted backups (format 2). The plain snapshot is built in the system temp
-// folder, then every file is sealed with a key from the Master Password and
-// written to the chosen folder, so that folder only ever holds ciphertext.
+// Encrypted backups. The plain snapshot is built in the system temp folder,
+// then every file is sealed and written to the chosen folder, so that folder
+// only ever holds ciphertext.
+//
+// Format 2 (read only): every file sealed with a key derived from the Master
+// Password. Format 3 (written now): every file sealed with a random backup key;
+// the backup key is wrapped by the Master Password and, when a content
+// recovery kit is active, also by the content key so that kit can open it.
 
 const SEALED_FORMAT: i64 = 2;
+const SEALED_FORMAT_V3: i64 = 3;
+pub(crate) const WRONG_BACKUP_KIT: &str = "That recovery key does not open this backup.";
+const NO_BACKUP_ROUTE: &str =
+    "This backup was made without a recovery kit. It needs the Master Password it was made with.";
+const OLD_BACKUP_KIT: &str =
+    "This backup was made before recovery kits. It needs the Master Password it was made with.";
+
+/// How an encrypted backup is opened.
+pub enum BackupUnlock<'a> {
+    Password(&'a str),
+    /// A content vault recovery kit (the key text).
+    Recovery(&'a str),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SealedHeaderV3 {
+    format: i64,
+    app_version: String,
+    created_at: String,
+    backup_id: String,
+    /// The backup key wrapped with the Master Password (key slot envelope JSON).
+    password_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_route: Option<RecoveryRoute>,
+}
+
+/// Lets the content recovery kit active at backup time open this backup: the
+/// snapshot's recovery slot plus the backup key wrapped by the content key.
+/// Never holds a recovery secret, a plaintext key, or device data.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RecoveryRoute {
+    vault_id: String,
+    key_generation: String,
+    recovery_id: String,
+    recovery_envelope: String,
+    wrapped_backup_key: String,
+}
+
+fn v3_password_aad(backup_id: &str) -> Vec<u8> {
+    format!("kivo:backup-key:v3:{backup_id}:password").into_bytes()
+}
+
+fn v3_route_aad(backup_id: &str, route: &RecoveryRoute) -> Vec<u8> {
+    format!(
+        "kivo:backup-key:v3:{backup_id}:content:{}:{}:{}",
+        route.vault_id, route.key_generation, route.recovery_id
+    )
+    .into_bytes()
+}
+
+fn v3_data_aad(backup_id: &str, name: &str) -> Vec<u8> {
+    format!("kivo:backup-data:v3:{backup_id}:{name}").into_bytes()
+}
+
+fn is_hex_id(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn read_header_format(path: &Path) -> Result<i64, String> {
+    let header: serde_json::Value =
+        serde_json::from_reader(File::open(path.join(SEALED_HEADER)).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("Invalid backup header: {e}"))?;
+    header["format"].as_i64().ok_or_else(|| "Invalid backup header".to_string())
+}
+
+fn read_v3_header(path: &Path) -> Result<SealedHeaderV3, String> {
+    let file = File::open(path.join(SEALED_HEADER)).map_err(|e| e.to_string())?;
+    if file.metadata().map_err(|e| e.to_string())?.len() > 64 * 1024 {
+        return Err("Invalid backup header".into());
+    }
+    let header: SealedHeaderV3 =
+        serde_json::from_reader(file).map_err(|e| format!("Invalid backup header: {e}"))?;
+    let route_ok = header.recovery_route.as_ref().is_none_or(|route| {
+        is_hex_id(&route.vault_id) && is_hex_id(&route.key_generation) && is_hex_id(&route.recovery_id)
+    });
+    if header.format != SEALED_FORMAT_V3 || !is_hex_id(&header.backup_id) || !route_ok {
+        return Err("Invalid backup header".into());
+    }
+    Ok(header)
+}
 const SEALED_HEADER: &str = "backup.json";
 const SEALED_MANIFEST: &str = "manifest.enc";
 const SEALED_DATABASE: &str = "kivo.db.enc";
@@ -675,17 +768,16 @@ fn sealed_aad(name: &str) -> Vec<u8> {
     format!("kivo:backup:v1:{name}").into_bytes()
 }
 
-fn seal_file(key: &[u8; 32], source: &Path, target: &Path, name: &str) -> Result<(), String> {
+fn seal_file(key: &[u8; 32], source: &Path, target: &Path, aad: &[u8]) -> Result<(), String> {
     // ponytail: whole-file read; stream in chunks if backups outgrow memory.
     let bytes = fs::read(source).map_err(|e| e.to_string())?;
-    let sealed = crate::encryption::encrypt_bytes(key, &bytes, &sealed_aad(name))?;
+    let sealed = crate::encryption::encrypt_bytes(key, &bytes, aad)?;
     fs::write(target, sealed).map_err(|e| e.to_string())
 }
 
-fn open_file(key: &[u8; 32], source: &Path, target: &Path, name: &str) -> Result<(), String> {
+fn open_file(key: &[u8; 32], source: &Path, target: &Path, aad: &[u8], wrong: &str) -> Result<(), String> {
     let bytes = fs::read(source).map_err(|e| e.to_string())?;
-    let plain = crate::encryption::decrypt_bytes(key, &bytes, &sealed_aad(name))
-        .map_err(|_| WRONG_BACKUP_PASSWORD.to_string())?;
+    let plain = crate::encryption::decrypt_bytes(key, &bytes, aad).map_err(|_| wrong.to_string())?;
     fs::write(target, plain).map_err(|e| e.to_string())
 }
 
@@ -697,14 +789,22 @@ fn inspect_sealed(path: &Path, info: &mut BackupInfo) -> Result<(), String> {
     info.encrypted = true;
     directory(path)?;
     regular(&path.join(SEALED_HEADER))?;
-    let header: SealedHeader = serde_json::from_reader(
-        File::open(path.join(SEALED_HEADER)).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("Invalid backup header: {e}"))?;
-    info.created_at = header.created_at;
-    info.app_version = header.app_version;
-    if header.format != SEALED_FORMAT {
-        info.problems.push("Unsupported backup format".into());
+    match read_header_format(path)? {
+        SEALED_FORMAT => {
+            let header: SealedHeader = serde_json::from_reader(
+                File::open(path.join(SEALED_HEADER)).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("Invalid backup header: {e}"))?;
+            info.created_at = header.created_at;
+            info.app_version = header.app_version;
+        }
+        SEALED_FORMAT_V3 => {
+            let header = read_v3_header(path)?;
+            info.created_at = header.created_at;
+            info.app_version = header.app_version;
+            info.recovery_available = header.recovery_route.is_some();
+        }
+        _ => info.problems.push("Unsupported backup format".into()),
     }
     regular(&path.join(SEALED_MANIFEST))?;
     regular(&path.join(SEALED_DATABASE))?;
@@ -761,31 +861,29 @@ pub fn create_sealed_backup_in(
             return Err(checked.problems.join("; "));
         }
 
-        let mut salt = [0u8; 16];
-        getrandom::getrandom(&mut salt).map_err(|_| "Could not protect the backup")?;
-        let mut key = crate::encryption::derive_key(password, &salt)?;
-        let sealed = (|| {
-            seal_file(&key, &plain.join("manifest.json"), &partial.join(SEALED_MANIFEST), SEALED_MANIFEST)?;
-            seal_file(&key, &plain.join(DATABASE), &partial.join(SEALED_DATABASE), SEALED_DATABASE)?;
-            fs::create_dir(partial.join("files")).map_err(|e| e.to_string())?;
-            for entry in fs::read_dir(plain.join("files")).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                let name = entry
-                    .file_name()
-                    .into_string()
-                    .map_err(|_| "Non-Unicode managed file name")?;
-                seal_file(&key, &entry.path(), &partial.join("files").join(&name), &format!("files/{name}"))?;
-            }
-            Ok::<(), String>(())
-        })();
-        key.fill(0);
-        sealed?;
+        let backup_id = key_slots::new_hex_id()?;
+        let key = Zeroizing::new(crate::encryption::new_vault_key()?);
+        seal_file(&key, &plain.join("manifest.json"), &partial.join(SEALED_MANIFEST), &v3_data_aad(&backup_id, SEALED_MANIFEST))?;
+        seal_file(&key, &plain.join(DATABASE), &partial.join(SEALED_DATABASE), &v3_data_aad(&backup_id, SEALED_DATABASE))?;
+        fs::create_dir(partial.join("files")).map_err(|e| e.to_string())?;
+        for entry in fs::read_dir(plain.join("files")).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "Non-Unicode managed file name")?;
+            seal_file(&key, &entry.path(), &partial.join("files").join(&name), &v3_data_aad(&backup_id, &format!("files/{name}")))?;
+        }
 
-        let header = SealedHeader {
-            format: SEALED_FORMAT,
+        // The snapshot and the route come from the same connection under the
+        // same database lock, so the route matches the slot inside the backup.
+        let header = SealedHeaderV3 {
+            format: SEALED_FORMAT_V3,
             app_version: env!("CARGO_PKG_VERSION").into(),
             created_at: checked.created_at,
-            salt: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, salt),
+            password_key: key_slots::wrap_key_with_password(&v3_password_aad(&backup_id), &key, password)?,
+            recovery_route: recovery_route(connection, password, &backup_id, &key)?,
+            backup_id,
         };
         let mut output = File::create(partial.join(SEALED_HEADER)).map_err(|e| e.to_string())?;
         serde_json::to_writer_pretty(&mut output, &header).map_err(|e| e.to_string())?;
@@ -803,24 +901,147 @@ pub fn create_sealed_backup_in(
     result
 }
 
+/// The route for a new backup when a content recovery kit is active and the
+/// Master Password opens the content key; `None` otherwise (the backup still
+/// opens with the password).
+fn recovery_route(
+    connection: &Connection,
+    password: &str,
+    backup_id: &str,
+    backup_key: &DataKey,
+) -> Result<Option<RecoveryRoute>, String> {
+    // A database from before key slots (schema < 20) has no kit to route to.
+    let has_slots_table: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vault_key_slots')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !has_slots_table {
+        return Ok(None);
+    }
+    let Some((recovery_id, recovery_envelope)) = key_slots::read_slot(connection, VaultScope::Content, "recovery")? else {
+        return Ok(None);
+    };
+    let Some((identity, _)) = key_slots::read_identity(connection, VaultScope::Content)? else {
+        return Ok(None);
+    };
+    let Ok(Some(content_key)) = key_slots::unlock_with_password(connection, VaultScope::Content, password) else {
+        return Ok(None);
+    };
+    let content_key = Zeroizing::new(content_key);
+    let mut route = RecoveryRoute {
+        vault_id: identity.vault_id,
+        key_generation: identity.key_generation,
+        recovery_id,
+        recovery_envelope,
+        wrapped_backup_key: String::new(),
+    };
+    let wrapped = crate::encryption::encrypt_bytes(&content_key, backup_key, &v3_route_aad(backup_id, &route))?;
+    route.wrapped_backup_key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, wrapped);
+    Ok(Some(route))
+}
+
+/// Finds the backup key (and, through a recovery kit, the content key).
+fn backup_key(path: &Path, unlock: &BackupUnlock<'_>) -> Result<(Zeroizing<DataKey>, BackupLayout, Option<Zeroizing<DataKey>>), String> {
+    match read_header_format(path)? {
+        SEALED_FORMAT => {
+            let BackupUnlock::Password(password) = unlock else {
+                return Err(OLD_BACKUP_KIT.into());
+            };
+            let header: SealedHeader = serde_json::from_reader(
+                File::open(path.join(SEALED_HEADER)).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("Invalid backup header: {e}"))?;
+            let salt = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &header.salt)
+                .map_err(|_| "Invalid backup header")?;
+            let key = Zeroizing::new(crate::encryption::derive_key(password, &salt)?);
+            Ok((key, BackupLayout::V2, None))
+        }
+        SEALED_FORMAT_V3 => {
+            let header = read_v3_header(path)?;
+            let layout = BackupLayout::V3(header.backup_id.clone());
+            match unlock {
+                BackupUnlock::Password(password) => {
+                    let key = key_slots::unwrap_key_with_password(&v3_password_aad(&header.backup_id), &header.password_key, password)?
+                        .ok_or_else(|| WRONG_BACKUP_PASSWORD.to_string())?;
+                    Ok((Zeroizing::new(key), layout, None))
+                }
+                BackupUnlock::Recovery(text) => {
+                    let route = header.recovery_route.as_ref().ok_or_else(|| NO_BACKUP_ROUTE.to_string())?;
+                    let kit = key_slots::parse_kit(text)?;
+                    if kit.scope != VaultScope::Content {
+                        return Err("That is a password vault kit. Backups open with the Master Password kit.".into());
+                    }
+                    if kit.vault_id != route.vault_id || kit.recovery_id != route.recovery_id {
+                        return Err(WRONG_BACKUP_KIT.into());
+                    }
+                    let identity = VaultIdentity {
+                        scope: VaultScope::Content,
+                        vault_id: route.vault_id.clone(),
+                        key_generation: route.key_generation.clone(),
+                    };
+                    let content_key = key_slots::unwrap_with_secret(&identity, &route.recovery_id, &route.recovery_envelope, &kit.secret)?
+                        .map(Zeroizing::new)
+                        .ok_or_else(|| WRONG_BACKUP_KIT.to_string())?;
+                    let wrapped = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &route.wrapped_backup_key)
+                        .map_err(|_| WRONG_BACKUP_KIT.to_string())?;
+                    let key: DataKey = crate::encryption::decrypt_bytes(&content_key, &wrapped, &v3_route_aad(&header.backup_id, route))
+                        .ok()
+                        .and_then(|plain| plain.try_into().ok())
+                        .ok_or_else(|| WRONG_BACKUP_KIT.to_string())?;
+                    Ok((Zeroizing::new(key), layout, Some(content_key)))
+                }
+            }
+        }
+        _ => Err("Unsupported backup format".into()),
+    }
+}
+
+enum BackupLayout {
+    V2,
+    V3(String),
+}
+
+impl BackupLayout {
+    fn aad(&self, name: &str) -> Vec<u8> {
+        match self {
+            BackupLayout::V2 => sealed_aad(name),
+            BackupLayout::V3(backup_id) => v3_data_aad(backup_id, name),
+        }
+    }
+}
+
 /// Decrypts a sealed backup into a new temp folder in the plain layout, so the
-/// normal checks and restore run on it unchanged. The caller deletes the folder.
+/// normal checks and restore run on it unchanged. The caller deletes the
+/// folder. Every file is authenticated; any failure deletes the partial copy.
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn open_sealed_backup(path: &Path, password: &str) -> Result<PathBuf, String> {
+    open_sealed_backup_with(path, &BackupUnlock::Password(password)).map(|(folder, _)| folder)
+}
+
+/// Like `open_sealed_backup`, but with a password or a content recovery kit.
+/// With a kit it also returns the content key the kit opened, which reads an
+/// encrypted vault inside the backup.
+pub fn open_sealed_backup_with(
+    path: &Path,
+    unlock: &BackupUnlock<'_>,
+) -> Result<(PathBuf, Option<Zeroizing<DataKey>>), String> {
     let info = inspect_backup_at(path);
     if !info.valid {
         return Err(format!("Backup invalid: {}", info.problems.join("; ")));
     }
-    let header: SealedHeader = serde_json::from_reader(
-        File::open(path.join(SEALED_HEADER)).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("Invalid backup header: {e}"))?;
-    let salt = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &header.salt)
-        .map_err(|_| "Invalid backup header")?;
-    let mut key = crate::encryption::derive_key(password, &salt)?;
+    let (key, layout, content_key) = backup_key(path, unlock)?;
+    let wrong = match unlock {
+        BackupUnlock::Password(_) => WRONG_BACKUP_PASSWORD,
+        BackupUnlock::Recovery(_) => WRONG_BACKUP_KIT,
+    };
     let target = temp_stage("open")?;
     let opened = (|| {
-        open_file(&key, &path.join(SEALED_MANIFEST), &target.join("manifest.json"), SEALED_MANIFEST)?;
-        open_file(&key, &path.join(SEALED_DATABASE), &target.join(DATABASE), SEALED_DATABASE)?;
+        open_file(&key, &path.join(SEALED_MANIFEST), &target.join("manifest.json"), &layout.aad(SEALED_MANIFEST), wrong)?;
+        open_file(&key, &path.join(SEALED_DATABASE), &target.join(DATABASE), &layout.aad(SEALED_DATABASE), wrong)?;
         fs::create_dir(target.join("files")).map_err(|e| e.to_string())?;
         for entry in fs::read_dir(path.join("files")).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
@@ -831,30 +1052,30 @@ pub fn open_sealed_backup(path: &Path, password: &str) -> Result<PathBuf, String
             if !plain_name(&name) {
                 return Err("Unsafe managed file name".into());
             }
-            open_file(&key, &entry.path(), &target.join("files").join(&name), &format!("files/{name}"))?;
+            open_file(&key, &entry.path(), &target.join("files").join(&name), &layout.aad(&format!("files/{name}")), wrong)?;
         }
         Ok::<(), String>(())
     })();
-    key.fill(0);
     if let Err(error) = opened {
         let _ = fs::remove_dir_all(&target);
         return Err(error);
     }
-    Ok(target)
+    Ok((target, content_key))
 }
 
-/// Restores a plain or sealed backup. A sealed one needs the Master Password
-/// it was made with; its decrypted copy is always deleted afterwards.
-pub(crate) fn restore_with_password(
+/// Restores a plain or sealed backup with a password or a content recovery
+/// kit. Restoring with a kit does not change the backup's password: Kivo
+/// reopens locked, and the same kit then sets a new Master Password.
+pub(crate) fn restore_with_unlock(
     state: &DatabaseState,
     path: &Path,
-    password: Option<&str>,
+    unlock: Option<&BackupUnlock<'_>>,
 ) -> Result<RestoreSummary, String> {
     if !path.join(SEALED_HEADER).exists() {
         return restore_into(state, path);
     }
-    let password = password.ok_or("Enter the Master Password this backup was made with.")?;
-    let opened = open_sealed_backup(path, password)?;
+    let unlock = unlock.ok_or("Enter the Master Password this backup was made with.")?;
+    let (opened, _content_key) = open_sealed_backup_with(path, unlock)?;
     let result = restore_into(state, &opened);
     let _ = fs::remove_dir_all(&opened);
     result

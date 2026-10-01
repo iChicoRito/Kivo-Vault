@@ -3,6 +3,7 @@ import { Alert, Button, Card, FieldError, Input, Label, Modal, Skeleton, TextFie
 import { HugeiconsIcon } from '@hugeicons/react'
 import { SquareLock01Icon } from '@hugeicons/core-free-icons'
 import { readRecoveryStatus } from '../../data/recovery'
+import { readDeviceUnlockStatus, unlockWithDevice } from '../../data/deviceUnlock'
 import { RecoveryDialog } from '../security/RecoveryDialog'
 
 import PageHeader from '../../app/PageHeader'
@@ -203,7 +204,7 @@ function CreateVaultForm() {
 }
 
 function UnlockVaultDialog() {
-  const { unlock } = useVault()
+  const { unlock, refresh } = useVault()
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -214,11 +215,34 @@ function UnlockVaultDialog() {
   const [recovering, setRecovering] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 
+  const [helloReady, setHelloReady] = useState(false)
+  const [helloBusy, setHelloBusy] = useState(false)
+
   useEffect(() => {
     readRecoveryStatus('passwords')
       .then((status) => setRecoveryEnabled(status.enabled))
       .catch(() => setRecoveryEnabled(false))
+    readDeviceUnlockStatus('passwords')
+      .then((status) => setHelloReady(status.available && status.enrolled))
+      .catch(() => setHelloReady(false))
   }, [])
+
+  async function unlockWithHello() {
+    if (helloBusy || busyRef.current) return
+    setHelloBusy(true)
+    setError(null)
+    try {
+      const result = await unlockWithDevice('passwords')
+      if (result.status === 'unlocked') {
+        setPassword('')
+        await refresh()
+      }
+    } catch (caught) {
+      setError(errorText(caught, 'Windows Hello could not unlock the vault. Use your password.'))
+    } finally {
+      setHelloBusy(false)
+    }
+  }
 
   async function submit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault()
@@ -313,6 +337,17 @@ function UnlockVaultDialog() {
                     <HugeiconsIcon aria-hidden="true" icon={SquareLock01Icon} size={18} />
                     {busy ? 'Unlocking...' : 'Unlock'}
                   </Button>
+
+                  {helloReady ? (
+                    <Button
+                      className="w-full"
+                      isDisabled={helloBusy || busy}
+                      variant="secondary"
+                      onPress={() => void unlockWithHello()}
+                    >
+                      {helloBusy ? 'Waiting for Windows Hello...' : 'Unlock with Windows Hello'}
+                    </Button>
+                  ) : null}
 
                   {notice ? (
                     <Typography role="status" type="body">

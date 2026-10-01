@@ -425,6 +425,22 @@ impl DatabaseState {
             .unwrap_or_else(|| PathBuf::from("pending-import"))
     }
 
+    /// Windows Hello setups for this installation: outside the database and
+    /// the managed files, so backups and exports never include them.
+    pub(crate) fn device_dir(&self) -> PathBuf {
+        self.path
+            .parent()
+            .map(|parent| parent.join("device-unlock"))
+            .unwrap_or_else(|| PathBuf::from("device-unlock"))
+    }
+
+    /// Removes the Windows Hello setup for one vault (`content` or
+    /// `passwords`). Called on password change, recovery, encryption changes,
+    /// restore and reset; the user sets it up again afterwards.
+    pub(crate) fn revoke_device_unlock(&self, scope: &str) {
+        let _ = fs::remove_file(self.device_dir().join(format!("{scope}.json")));
+    }
+
     /// Refuses a password or PIN check while a wait from earlier wrong tries
     /// is still running.
     pub(crate) fn check_attempt(&self) -> Result<(), String> {
@@ -575,6 +591,7 @@ impl DatabaseState {
     pub(crate) fn reset(&self) -> Result<(), String> {
         let _ = self.content_key.clear();
         self.close_connection()?;
+        let _ = fs::remove_dir_all(self.device_dir());
 
         let mut removed = Ok(());
         for suffix in ["", "-wal", "-shm", "-journal"] {
@@ -654,7 +671,9 @@ impl DatabaseState {
             return Err("Use change_master_password while encryption is enabled".into());
         }
         write_password_verifier(connection.as_mut().expect("checked above"), verifier)
-            .map_err(|error| format!("Could not save app lock: {error}"))
+            .map_err(|error| format!("Could not save app lock: {error}"))?;
+        self.revoke_device_unlock("content");
+        Ok(())
     }
 
     fn remove_password_verifier(&self) -> Result<(), String> {
@@ -663,7 +682,9 @@ impl DatabaseState {
             return Err("Disable encryption before removing app lock".into());
         }
         clear_password_verifier(connection.as_mut().expect("checked above"))
-            .map_err(|error| format!("Could not remove app lock: {error}"))
+            .map_err(|error| format!("Could not remove app lock: {error}"))?;
+        self.revoke_device_unlock("content");
+        Ok(())
     }
 
     fn password_verifier(&self) -> Result<Option<String>, String> {

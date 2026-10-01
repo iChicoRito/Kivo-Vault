@@ -1040,6 +1040,7 @@ pub fn enable_encryption(
     let key = key?;
     // A file staged before the switch was staged unencrypted.
     state.advance_session();
+    state.revoke_device_unlock("content");
     state.content_key().store(key)?;
     let items: i64 = connection
         .query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0))
@@ -1068,6 +1069,7 @@ pub fn disable_encryption(
     record_password_result(&state, &result);
     let result = result?;
     state.advance_session();
+    state.revoke_device_unlock("content");
     state.content_key().clear()?;
     Ok(result)
 }
@@ -1084,6 +1086,7 @@ pub fn change_master_password(
     record_password_result(&state, &result);
     if result.is_ok() {
         state.advance_session();
+        state.revoke_device_unlock("content");
     }
     result
 }

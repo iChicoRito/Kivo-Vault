@@ -32,6 +32,17 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 zeroize = "1"
 
+# Windows Hello and DPAPI for device unlock; other platforms report it unavailable.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+  "Foundation",
+  "Security_Credentials_UI",
+  "Win32_Foundation",
+  "Win32_Security_Cryptography",
+  "Win32_System_WinRT",
+] }
+windows-future = "0.2"
+
 # Vault keys use Argon2id at 64 MiB; unoptimized it makes debug builds and
 # tests take seconds per unlock.
 [profile.dev.package.argon2]

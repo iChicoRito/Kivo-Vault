@@ -4,7 +4,8 @@ import { Button, FieldError, Input, Label, TextField, Typography } from '@heroui
 import PageHeader from '../../app/PageHeader'
 import { readAppLockVerifier } from '../../data/security'
 import { unlockVault as unlockContentVault } from '../../data/protection'
-import { readRecoveryStatus } from '../../data/recovery'
+import { errorText, readRecoveryStatus } from '../../data/recovery'
+import { readDeviceUnlockStatus, unlockWithDevice } from '../../data/deviceUnlock'
 import { RecoveryDialog } from './RecoveryDialog'
 
 export type UnlockPageProps = {
@@ -23,13 +24,39 @@ export default function UnlockPage({ onUnlocked }: UnlockPageProps) {
   const [recoveryEnabled, setRecoveryEnabled] = useState(false)
   const [recovering, setRecovering] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [helloReady, setHelloReady] = useState(false)
+  const [helloBusy, setHelloBusy] = useState(false)
 
   useEffect(() => {
     passwordRef.current?.focus()
     readRecoveryStatus('content')
       .then((status) => setRecoveryEnabled(status.enabled))
       .catch(() => setRecoveryEnabled(false))
+    readDeviceUnlockStatus('content')
+      .then((status) => setHelloReady(status.available && status.enrolled))
+      .catch(() => setHelloReady(false))
   }, [])
+
+  async function unlockWithHello() {
+    if (helloBusy || busyRef.current) return
+    setHelloBusy(true)
+    setError(null)
+    try {
+      const result = await unlockWithDevice('content')
+      // A cancelled prompt is quiet; the password field stays ready.
+      if (result.status === 'unlocked') {
+        setPassword('')
+        onUnlocked?.()
+      }
+    } catch (reason) {
+      setError(errorText(reason, 'Windows Hello could not unlock Kivo. Use your password.'))
+      void readDeviceUnlockStatus('content')
+        .then((status) => setHelloReady(status.available && status.enrolled))
+        .catch(() => setHelloReady(false))
+    } finally {
+      setHelloBusy(false)
+    }
+  }
 
   async function submit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault()
@@ -100,6 +127,12 @@ export default function UnlockPage({ onUnlocked }: UnlockPageProps) {
             <Typography role="status" type="body">
               {notice}
             </Typography>
+          ) : null}
+
+          {helloReady ? (
+            <Button isDisabled={helloBusy || checking} variant="secondary" onPress={() => void unlockWithHello()}>
+              {helloBusy ? 'Waiting for Windows Hello...' : 'Unlock with Windows Hello'}
+            </Button>
           ) : null}
 
           <div className="flex flex-wrap items-center justify-between gap-3">

@@ -51,12 +51,12 @@ impl VaultKeyState {
 
     /// Goes up on every lock. An unlock that started before a lock must not
     /// put its key back afterwards.
-    fn generation(&self) -> u64 {
+    pub(crate) fn generation(&self) -> u64 {
         self.1.load(Ordering::SeqCst)
     }
 
     /// Stores `key` only if no lock happened since `generation` was read.
-    fn store_if_current(&self, mut key: [u8; KEY_LENGTH], generation: u64) -> Result<(), String> {
+    pub(crate) fn store_if_current(&self, mut key: [u8; KEY_LENGTH], generation: u64) -> Result<(), String> {
         let Ok(mut guard) = self.0.lock() else {
             key.fill(0);
             return Err(LOCKED_MESSAGE.to_string());
@@ -1585,6 +1585,9 @@ pub fn change_password_vault_password(
     db.check_attempt()?;
     let result = change_vault_password_with_state(db.inner(), &current, &next);
     record_secret_result(&db, &result, UNLOCK_ERROR);
+    if result.is_ok() {
+        db.revoke_device_unlock("passwords");
+    }
     result
 }
 

@@ -46,6 +46,7 @@ import AppLockSettings from '../security/AppLockSettings'
 import ClipboardSettings from '../security/ClipboardSettings'
 import EncryptionSettings from '../security/EncryptionSettings'
 import RecoverySettings from '../security/RecoverySettings'
+import DeviceUnlockSettings from '../security/DeviceUnlockSettings'
 import BackupSettings from '../backup/BackupSettings'
 import DangerZoneSettings from './DangerZoneSettings'
 import PortabilitySettings from '../portability/PortabilitySettings'
@@ -873,6 +874,7 @@ export default function SettingsPage() {
           <AppLockSettings />
           <EncryptionSettings />
           <RecoverySettings />
+          <DeviceUnlockSettings />
           <ClipboardSettings />
         </Tabs.Panel>
 

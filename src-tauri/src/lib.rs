@@ -1,5 +1,6 @@
 mod backup;
 mod database;
+mod device_unlock;
 mod duplicates;
 mod encryption;
 mod health;
@@ -153,6 +154,10 @@ pub fn run() {
             recovery::cancel_recovery_setup,
             recovery::disable_recovery,
             recovery::recover_vault,
+            device_unlock::read_device_unlock_status,
+            device_unlock::enroll_device_unlock,
+            device_unlock::unlock_with_device,
+            device_unlock::disable_device_unlock,
             passwords::list_credentials,
             passwords::load_credential,
             passwords::save_credential,

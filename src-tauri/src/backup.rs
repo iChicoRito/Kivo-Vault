@@ -645,6 +645,9 @@ pub fn restore_backup_at(
 /// left without a database.
 pub(crate) fn restore_into(state: &DatabaseState, path: &Path) -> Result<RestoreSummary, String> {
     let _ = state.content_key().clear();
+    // A restored vault has other keys; any Windows Hello setup is set up again.
+    state.revoke_device_unlock("content");
+    state.revoke_device_unlock("passwords");
     state.close_connection()?;
     let result = restore_backup_at(path, state.database_path(), state.files_dir());
     let reopened = state.reopen_connection();

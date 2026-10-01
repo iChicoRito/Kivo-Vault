@@ -23,7 +23,7 @@ use crate::passwords::{self, VaultKeyState};
 
 const DRAFT_TTL: Duration = Duration::from_secs(5 * 60);
 
-const WRONG_PASSWORD: &str = "That password is not correct";
+pub(crate) const WRONG_PASSWORD: &str = "That password is not correct";
 const WRONG_KIT: &str = "That recovery key does not open this vault";
 const DRAFT_GONE: &str = "This recovery kit setup has ended. Start again.";
 const NOT_ACTIVE: &str = "That recovery kit is not the active one for this vault";
@@ -69,7 +69,7 @@ fn available(connection: &Connection, scope: VaultScope) -> Result<bool, String>
 
 /// Checks the vault's current password and returns its data key. A wrong
 /// password is `Err(WRONG_PASSWORD)`.
-fn authenticate(connection: &mut Connection, scope: VaultScope, password: &str) -> Result<DataKey, String> {
+pub(crate) fn authenticate(connection: &mut Connection, scope: VaultScope, password: &str) -> Result<DataKey, String> {
     match scope {
         VaultScope::Content if encryption::is_enabled(connection)? => {
             encryption::unlock(connection, password)?.ok_or_else(|| WRONG_PASSWORD.to_string())
@@ -346,6 +346,7 @@ pub(crate) fn recover_with_state(
     result?;
 
     // Finish locked so the new password is used once to open the vault.
+    db.revoke_device_unlock(scope_value.as_str());
     match scope_value {
         VaultScope::Content => {
             let _ = db.content_key().clear();

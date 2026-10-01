@@ -125,6 +125,24 @@ describe('PasswordsPage vault gate', () => {
     expect(within(dialog).getByLabelText('Master Password')).toBeInTheDocument()
   })
 
+  it('unlocks the password vault with Windows Hello when it is set up', async () => {
+    let unlocked = false
+    stub('vault_status', () => ({ configured: true, unlocked }))
+    stub('read_device_unlock_status', ({ scope }) => ({ scope, available: true, enrolled: true, unavailableReason: null }))
+    stub('unlock_with_device', () => {
+      unlocked = true
+      return { status: 'unlocked' }
+    })
+
+    renderPasswords()
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Unlock with Windows Hello' }))
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('unlock_with_device', { scope: 'passwords' }))
+    expect(await screen.findByRole('button', { name: 'New Password' })).toBeInTheDocument()
+  })
+
   it('offers the recovery kit in the unlock dialog and after it is closed', async () => {
     unlockedPage(true, false)
     stub('read_recovery_status', ({ scope }) => ({ scope, available: true, enabled: true }))

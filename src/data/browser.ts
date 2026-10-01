@@ -130,6 +130,13 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
     case 'list_credential_versions':
     case 'list_index_state':
       return [] as T
+    case 'read_device_unlock_status':
+      return {
+        scope: args.scope,
+        available: false,
+        enrolled: false,
+        unavailableReason: 'Windows Hello needs the Kivo desktop app.',
+      } as T
     case 'read_recovery_status':
       // The browser preview has no vault keys, so recovery is never available here.
       return { scope: args.scope, available: false, enabled: false } as T
@@ -158,6 +165,9 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
     case 'cancel_recovery_setup':
     case 'disable_recovery':
     case 'recover_vault':
+    case 'enroll_device_unlock':
+    case 'unlock_with_device':
+    case 'disable_device_unlock':
       throw new Error('This action needs the Kivo desktop app.')
     case 'initialize_database':
       return undefined as T

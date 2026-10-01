@@ -208,6 +208,9 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
       return state.passwordVerifier as T
     case 'has_password_verifier':
       return Boolean(state.passwordVerifier) as T
+    case 'read_protection_state':
+      // The preview has no encryption backend; it can show the card, never turn it on.
+      return { lockEnabled: Boolean(state.passwordVerifier), encryptionEnabled: false } as T
     case 'set_password_verifier':
       writeState({ ...state, passwordVerifier: String(args.verifier ?? '') })
       return undefined as T

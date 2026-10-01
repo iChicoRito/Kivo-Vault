@@ -17,6 +17,37 @@ it('requires a master password before encryption, warns about external temp file
   expect(screen.getByText(/temp/i)).toBeInTheDocument()
 })
 
+it('shows the encryption state at a glance and asks for the password only when turning it on', async () => {
+  let enabled = false
+  getTauriInvoke().mockImplementation(async (command: string, args?: { password?: string }) => {
+    if (command === 'read_protection_state') return { lockEnabled: true, encryptionEnabled: enabled }
+    if (command === 'enable_encryption') {
+      if (args?.password !== 'right password') throw 'Incorrect Master Password'
+      enabled = true
+      return { itemCount: 1, fileCount: 0 }
+    }
+    return null
+  })
+  render(<EncryptionSettings />)
+
+  expect(await screen.findByText('Your notes and files are stored unencrypted on this device.')).toBeInTheDocument()
+  expect(screen.getByText('Off')).toBeInTheDocument()
+  expect(screen.getByText('Would be protected')).toBeInTheDocument()
+  expect(screen.queryByLabelText('Master Password')).not.toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Turn on encryption' }))
+  const dialog = await screen.findByRole('dialog')
+  fireEvent.change(within(dialog).getByLabelText('Master Password'), { target: { value: 'wrong' } })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Turn on encryption' }))
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent('That Master Password is not correct.')
+
+  fireEvent.change(within(dialog).getByLabelText('Master Password'), { target: { value: 'right password' } })
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Turn on encryption' }))
+  expect(await screen.findByText('Your notes and files are encrypted on this device.')).toBeInTheDocument()
+  expect(screen.getByText('On')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Turn off encryption' })).toBeInTheDocument()
+})
+
 it('backs up in one click, or into a picked folder, and leaves automatic backup off', async () => {
   getTauriInvoke().mockImplementation((command: string) => Promise.resolve(command === 'pick_backup_destination' ? 'C:/safe' : {
     path: 'C:/safe/Kivo Backup', createdAt: '2026-09-24', appVersion: '0.1', schemaVersion: 12,

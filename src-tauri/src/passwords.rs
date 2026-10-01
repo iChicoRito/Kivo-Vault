@@ -2375,4 +2375,96 @@ mod tests {
         )
         .is_err());
     }
+
+    // T24 phase 1 baselines: the two vaults before key slots or recovery exist.
+
+    const T24_CONTENT_PASSWORD: &str = "content master password";
+    const T24_VAULT_PASSWORD: &str = "credential vault password";
+
+    /// One database with content encryption on and a password vault, each with its own password.
+    fn t24_two_vaults() -> (TempVault, DatabaseState, VaultKeyState) {
+        let workspace = TempVault::new("t24-two-vaults");
+        let db = workspace.state();
+        {
+            let mut guard = db.require_connection().expect("lock connection");
+            let connection = guard.as_mut().expect("connection is initialized");
+            crate::database::write_password_verifier(
+                connection,
+                &crate::security::hash_secret(T24_CONTENT_PASSWORD).expect("hash"),
+            )
+            .expect("set content password");
+            crate::encryption::enable(connection, &workspace.files_dir, T24_CONTENT_PASSWORD)
+                .expect("enable content encryption");
+        }
+        let vault = VaultKeyState::default();
+        setup_vault_with_state(&db, &vault, T24_VAULT_PASSWORD).expect("setup vault");
+        (workspace, db, vault)
+    }
+
+    #[test]
+    fn t24_each_vault_password_opens_only_its_own_vault() {
+        let (_workspace, db, vault) = t24_two_vaults();
+        vault.clear();
+        let guard = db.require_connection().expect("lock connection");
+        let connection = guard.as_ref().expect("connection is initialized");
+
+        assert!(unlock_vault_in(connection, T24_CONTENT_PASSWORD).is_err());
+        assert!(unlock_vault_in(connection, T24_VAULT_PASSWORD).is_ok());
+        assert_eq!(
+            crate::encryption::unlock(connection, T24_VAULT_PASSWORD).expect("unlock call"),
+            None
+        );
+        assert!(crate::encryption::unlock(connection, T24_CONTENT_PASSWORD)
+            .expect("unlock call")
+            .is_some());
+    }
+
+    #[test]
+    fn t24_current_and_historical_credentials_survive_reopening() {
+        let (workspace, db, vault) = t24_two_vaults();
+        let saved = save_credential_with_state(&db, &vault, &credential_input("Bank", "old-pass"))
+            .expect("save");
+        resave(&db, &vault, &saved.id, "new-pass");
+        drop(db);
+        vault.clear();
+
+        let reopened = workspace.state();
+        let fresh = VaultKeyState::default();
+        unlock_vault_with_state(&reopened, &fresh, T24_VAULT_PASSWORD).expect("unlock");
+
+        let current = load_credential_with_state(&reopened, &fresh, &saved.id).expect("load");
+        assert_eq!(current.password, "new-pass");
+        let history = versions(&reopened, &fresh, &saved.id);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].password, "old-pass");
+    }
+
+    #[test]
+    fn t24_wrong_password_or_altered_canary_installs_no_key() {
+        let (_workspace, db, vault) = t24_two_vaults();
+        vault.clear();
+
+        assert!(unlock_vault_with_state(&db, &vault, "wrong password").is_err());
+        assert!(vault.require_key().is_err());
+
+        {
+            let guard = db.require_connection().expect("lock connection");
+            let connection = guard.as_ref().expect("connection is initialized");
+            let mut canary: Vec<u8> = connection
+                .query_row("SELECT canary_ciphertext FROM vault_config WHERE id = 1", [], |row| {
+                    row.get(0)
+                })
+                .expect("read canary");
+            *canary.last_mut().expect("canary has bytes") ^= 1;
+            connection
+                .execute(
+                    "UPDATE vault_config SET canary_ciphertext = ?1 WHERE id = 1",
+                    params![canary],
+                )
+                .expect("alter canary");
+        }
+
+        assert!(unlock_vault_with_state(&db, &vault, T24_VAULT_PASSWORD).is_err());
+        assert!(vault.require_key().is_err());
+    }
 }

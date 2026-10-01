@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { Alert, Button, Card, FieldError, Input, Label, Modal, Skeleton, TextField, Typography } from '@heroui/react'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { SquareLock01Icon } from '@hugeicons/core-free-icons'
+import { readRecoveryStatus } from '../../data/recovery'
+import { RecoveryDialog } from '../security/RecoveryDialog'
 
 import PageHeader from '../../app/PageHeader'
 import { useVault } from '../../app/vault'
@@ -151,7 +153,7 @@ function CreateVaultForm() {
 
   return (
     <VaultPanel
-      description="This password encrypts your saved logins. Kivo cannot recover it."
+      description="This password encrypts your saved logins. If you forget it, only a recovery kit (Settings > Security) can replace it."
       title="Create a master password"
       titleId="vault-create-title"
     >
@@ -208,6 +210,15 @@ function UnlockVaultDialog() {
   const [open, setOpen] = useState(true)
   const busyRef = useRef(false)
   const passwordRef = useRef<HTMLInputElement>(null)
+  const [recoveryEnabled, setRecoveryEnabled] = useState(false)
+  const [recovering, setRecovering] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    readRecoveryStatus('passwords')
+      .then((status) => setRecoveryEnabled(status.enabled))
+      .catch(() => setRecoveryEnabled(false))
+  }, [])
 
   async function submit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault()
@@ -292,12 +303,33 @@ function UnlockVaultDialog() {
                     <HugeiconsIcon aria-hidden="true" icon={SquareLock01Icon} size={18} />
                     {busy ? 'Unlocking...' : 'Unlock'}
                   </Button>
+
+                  {notice ? (
+                    <Typography role="status" type="body">
+                      {notice}
+                    </Typography>
+                  ) : null}
+                  {recoveryEnabled ? (
+                    <Button className="justify-self-center" variant="ghost" onPress={() => setRecovering(true)}>
+                      Forgot it? Use recovery kit
+                    </Button>
+                  ) : null}
                 </form>
               </Modal.Body>
             </Modal.Dialog>
           </Modal.Container>
         </Modal.Backdrop>
       </Modal>
+
+      <RecoveryDialog
+        mode={recovering ? 'recover' : null}
+        scope="passwords"
+        onClose={() => setRecovering(false)}
+        onDone={() => {
+          setRecovering(false)
+          setNotice('Your new vault password is set. Unlock with it now.')
+        }}
+      />
     </>
   )
 }

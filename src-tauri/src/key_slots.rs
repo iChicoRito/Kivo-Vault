@@ -193,6 +193,55 @@ pub fn unwrap_with_password(
     Ok(Some(key))
 }
 
+/// A recovery slot's JSON: the data key sealed directly under a random
+/// 32-byte recovery secret. No password hashing: the secret is already random.
+pub fn wrap_with_secret(
+    identity: &VaultIdentity,
+    slot_id: &str,
+    data_key: &DataKey,
+    secret: &DataKey,
+) -> Result<String, String> {
+    let sealed = encrypt_bytes(secret, data_key, &identity.slot_aad("recovery", slot_id))?;
+    serde_json::to_string(&KeyEnvelope {
+        version: ENVELOPE_VERSION,
+        method: "recovery".to_string(),
+        salt: None,
+        kdf: None,
+        ciphertext: STANDARD.encode(sealed),
+    })
+    .map_err(|_| "Could not protect the vault key".to_string())
+}
+
+/// Opens a recovery slot. `Ok(None)` means the secret does not open it.
+pub fn unwrap_with_secret(
+    identity: &VaultIdentity,
+    slot_id: &str,
+    envelope_json: &str,
+    secret: &DataKey,
+) -> Result<Option<DataKey>, String> {
+    if envelope_json.len() > MAX_ENVELOPE_JSON {
+        return Err(DAMAGED.to_string());
+    }
+    let envelope: KeyEnvelope = serde_json::from_str(envelope_json).map_err(|_| DAMAGED.to_string())?;
+    if envelope.version != ENVELOPE_VERSION
+        || envelope.method != "recovery"
+        || envelope.salt.is_some()
+        || envelope.kdf.is_some()
+    {
+        return Err(DAMAGED.to_string());
+    }
+    let sealed = STANDARD.decode(&envelope.ciphertext).map_err(|_| DAMAGED.to_string())?;
+    if sealed.len() != 12 + 32 + 16 {
+        return Err(DAMAGED.to_string());
+    }
+    let Ok(plain) = decrypt_bytes(secret, &sealed, &identity.slot_aad("recovery", slot_id)) else {
+        return Ok(None);
+    };
+    let plain = Zeroizing::new(plain);
+    let key: DataKey = plain.as_slice().try_into().map_err(|_| DAMAGED.to_string())?;
+    Ok(Some(key))
+}
+
 /// Proves a data key belongs to this vault identity, even for an empty vault.
 pub fn make_key_check(identity: &VaultIdentity, data_key: &DataKey) -> Result<Vec<u8>, String> {
     encrypt_bytes(data_key, KEY_CHECK_PLAINTEXT, &identity.check_aad())
@@ -228,7 +277,7 @@ pub fn read_identity(
         .map_err(|error| format!("Could not read the vault keys: {error}"))
 }
 
-fn read_slot(connection: &Connection, scope: VaultScope, method: &str) -> Result<Option<(String, String)>, String> {
+pub fn read_slot(connection: &Connection, scope: VaultScope, method: &str) -> Result<Option<(String, String)>, String> {
     connection
         .query_row(
             "SELECT slot_id, envelope_json FROM vault_key_slots WHERE scope = ?1 AND method = ?2",
@@ -322,6 +371,35 @@ pub fn replace_password_slot(
     Ok(())
 }
 
+/// Saves (or replaces) the recovery slot. Call inside the caller's transaction.
+pub fn put_recovery_slot(
+    connection: &Connection,
+    scope: VaultScope,
+    slot_id: &str,
+    envelope_json: &str,
+) -> Result<(), String> {
+    connection
+        .execute(
+            "INSERT INTO vault_key_slots (scope, method, slot_id, envelope_json)
+             VALUES (?1, 'recovery', ?2, ?3)
+             ON CONFLICT(scope, method) DO UPDATE SET
+               slot_id = excluded.slot_id, envelope_json = excluded.envelope_json",
+            params![scope.as_str(), slot_id, envelope_json],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("Could not save the recovery kit: {error}"))
+}
+
+pub fn remove_recovery_slot(connection: &Connection, scope: VaultScope) -> Result<(), String> {
+    connection
+        .execute(
+            "DELETE FROM vault_key_slots WHERE scope = ?1 AND method = 'recovery'",
+            params![scope.as_str()],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("Could not turn off the recovery kit: {error}"))
+}
+
 /// Removes a vault's identity and every slot (they cascade).
 pub fn remove_scope(connection: &Connection, scope: VaultScope) -> Result<(), String> {
     connection
@@ -402,6 +480,23 @@ mod tests {
         }
         assert!(unwrap_with_password(&id, "slot", &"x".repeat(MAX_ENVELOPE_JSON + 1), "pw").is_err());
         assert!(unwrap_with_password(&id, "slot", "not json", "pw").is_err());
+    }
+
+    #[test]
+    fn recovery_slots_open_only_with_their_secret_and_identity() {
+        let id = identity(VaultScope::Passwords);
+        let key = new_vault_key().unwrap();
+        let secret = new_vault_key().unwrap();
+        let json = wrap_with_secret(&id, "rid", &key, &secret).unwrap();
+
+        assert_eq!(unwrap_with_secret(&id, "rid", &json, &secret).unwrap(), Some(key));
+        assert_eq!(unwrap_with_secret(&id, "rid", &json, &new_vault_key().unwrap()).unwrap(), None);
+        assert_eq!(unwrap_with_secret(&id, "other", &json, &secret).unwrap(), None);
+        let other = VaultIdentity { scope: VaultScope::Content, ..id.clone() };
+        assert_eq!(unwrap_with_secret(&other, "rid", &json, &secret).unwrap(), None);
+        let password_json = wrap_with_password(&id, "rid", &key, "pw").unwrap();
+        assert!(unwrap_with_secret(&id, "rid", &password_json, &secret).is_err(), "a password slot is not a recovery slot");
+        assert!(unwrap_with_password(&id, "rid", &json, "pw").is_err());
     }
 
     #[test]

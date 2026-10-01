@@ -130,6 +130,9 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
     case 'list_credential_versions':
     case 'list_index_state':
       return [] as T
+    case 'read_recovery_status':
+      // The browser preview has no vault keys, so recovery is never available here.
+      return { scope: args.scope, available: false, enabled: false } as T
     case 'load_storage_report':
       return { totalBytes: 0, databaseBytes: 0, fileBytes: 0, fileCount: 0, groups: [], largest: [] } as T
     case 'read_item_file':
@@ -149,6 +152,12 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
     case 'commit_file_import':
     case 'cancel_file_import':
     case 'change_password_vault_password':
+    case 'begin_recovery_setup':
+    case 'save_recovery_kit':
+    case 'confirm_recovery_setup':
+    case 'cancel_recovery_setup':
+    case 'disable_recovery':
+    case 'recover_vault':
       throw new Error('This action needs the Kivo desktop app.')
     case 'initialize_database':
       return undefined as T

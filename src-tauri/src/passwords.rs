@@ -820,7 +820,7 @@ fn decrypt(
         .map_err(|_| "Could not read the protected data".to_string())
 }
 
-fn vault_configured(connection: &Connection) -> rusqlite::Result<bool> {
+pub(crate) fn vault_configured(connection: &Connection) -> rusqlite::Result<bool> {
     let count: i64 = connection.query_row(
         "SELECT COUNT(*) FROM vault_config WHERE id = 1",
         [],
@@ -1222,7 +1222,7 @@ fn vault_status_with_state(
     })
 }
 
-fn setup_vault_with_state(
+pub(crate) fn setup_vault_with_state(
     db: &DatabaseState,
     vault: &VaultKeyState,
     master_password: &str,
@@ -1266,7 +1266,7 @@ fn unlock_and_upgrade(connection: &mut Connection, master_password: &str) -> Res
     }
 }
 
-fn unlock_vault_with_state(
+pub(crate) fn unlock_vault_with_state(
     db: &DatabaseState,
     vault: &VaultKeyState,
     master_password: &str,
@@ -1281,6 +1281,23 @@ fn unlock_vault_with_state(
 
     vault_status_with_state(db, vault)
 }
+
+/// Checks the password vault's password for recovery setup and turning it
+/// off. Moves an older vault to a v1 slot first; a vault that cannot move yet
+/// cannot have a recovery kit.
+pub(crate) fn authenticate_vault_password(
+    connection: &mut Connection,
+    master_password: &str,
+) -> Result<[u8; KEY_LENGTH], String> {
+    let mut key = unlock_and_upgrade(connection, master_password)?;
+    if !key_slots::has_slots(connection, VaultScope::Passwords)? {
+        key.fill(0);
+        return Err("Some saved passwords could not be read. Check vault health, then try again.".to_string());
+    }
+    Ok(key)
+}
+
+pub(crate) const VAULT_PASSWORD_MIN: usize = MIN_PASSWORD_LENGTH;
 
 /// Changes only the password vault's password: its slot is rewrapped, the
 /// data key and every saved credential and history entry stay as they are.
@@ -1426,6 +1443,7 @@ fn upgrade_legacy_vault(
 
 fn lock_vault_with_state(db: &DatabaseState, vault: &VaultKeyState) -> Result<VaultStatus, String> {
     vault.clear();
+    db.clear_pending_recovery();
     vault_status_with_state(db, vault)
 }
 
@@ -1441,7 +1459,7 @@ fn list_credentials_with_state(
     read_credential_summaries(connection.as_ref().expect("checked above"), &key, filter)
 }
 
-fn load_credential_with_state(
+pub(crate) fn load_credential_with_state(
     db: &DatabaseState,
     vault: &VaultKeyState,
     id: &str,
@@ -1453,7 +1471,7 @@ fn load_credential_with_state(
         .ok_or_else(|| "Credential was not found".to_string())
 }
 
-fn save_credential_with_state(
+pub(crate) fn save_credential_with_state(
     db: &DatabaseState,
     vault: &VaultKeyState,
     input: &CredentialInput,

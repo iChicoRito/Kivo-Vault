@@ -45,6 +45,7 @@ import { reindexItems } from '../../data/insights'
 import AppLockSettings from '../security/AppLockSettings'
 import ClipboardSettings from '../security/ClipboardSettings'
 import EncryptionSettings from '../security/EncryptionSettings'
+import RecoverySettings from '../security/RecoverySettings'
 import BackupSettings from '../backup/BackupSettings'
 import DangerZoneSettings from './DangerZoneSettings'
 import PortabilitySettings from '../portability/PortabilitySettings'
@@ -871,6 +872,7 @@ export default function SettingsPage() {
         <Tabs.Panel className="grid gap-5 pt-5" id="security">
           <AppLockSettings />
           <EncryptionSettings />
+          <RecoverySettings />
           <ClipboardSettings />
         </Tabs.Panel>
 

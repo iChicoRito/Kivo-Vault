@@ -9,6 +9,7 @@ mod key_slots;
 mod link_details;
 mod passwords;
 mod portability;
+mod recovery;
 mod security;
 mod selective_restore;
 mod vault;
@@ -143,6 +144,13 @@ pub fn run() {
             passwords::unlock_vault,
             passwords::lock_vault,
             passwords::change_password_vault_password,
+            recovery::read_recovery_status,
+            recovery::begin_recovery_setup,
+            recovery::save_recovery_kit,
+            recovery::confirm_recovery_setup,
+            recovery::cancel_recovery_setup,
+            recovery::disable_recovery,
+            recovery::recover_vault,
             passwords::list_credentials,
             passwords::load_credential,
             passwords::save_credential,

@@ -4,6 +4,8 @@ import { Button, FieldError, Input, Label, TextField, Typography } from '@heroui
 import PageHeader from '../../app/PageHeader'
 import { readAppLockVerifier } from '../../data/security'
 import { unlockVault as unlockContentVault } from '../../data/protection'
+import { readRecoveryStatus } from '../../data/recovery'
+import { RecoveryDialog } from './RecoveryDialog'
 
 export type UnlockPageProps = {
   onUnlocked?: () => void
@@ -18,9 +20,15 @@ export default function UnlockPage({ onUnlocked }: UnlockPageProps) {
   const [checking, setChecking] = useState(false)
   const passwordRef = useRef<HTMLInputElement>(null)
   const busyRef = useRef(false)
+  const [recoveryEnabled, setRecoveryEnabled] = useState(false)
+  const [recovering, setRecovering] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => {
     passwordRef.current?.focus()
+    readRecoveryStatus('content')
+      .then((status) => setRecoveryEnabled(status.enabled))
+      .catch(() => setRecoveryEnabled(false))
   }, [])
 
   async function submit(event?: FormEvent<HTMLFormElement>) {
@@ -88,13 +96,37 @@ export default function UnlockPage({ onUnlocked }: UnlockPageProps) {
             App lock keeps Kivo closed to other people. It does not encrypt your files.
           </Typography>
 
-          <div className="flex justify-end">
+          {notice ? (
+            <Typography role="status" type="body">
+              {notice}
+            </Typography>
+          ) : null}
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            {recoveryEnabled ? (
+              <Button variant="ghost" onPress={() => setRecovering(true)}>
+                Forgot it? Use recovery kit
+              </Button>
+            ) : (
+              <span />
+            )}
             <Button isDisabled={checking} type="submit" onPress={() => void submit()}>
               {checking ? 'Checking password...' : 'Unlock Kivo'}
             </Button>
           </div>
         </form>
       </div>
+
+      <RecoveryDialog
+        mode={recovering ? 'recover' : null}
+        scope="content"
+        onClose={() => setRecovering(false)}
+        onDone={() => {
+          setRecovering(false)
+          setNotice('Your new Master Password is set. Unlock with it now.')
+          passwordRef.current?.focus()
+        }}
+      />
     </section>
   )
 }

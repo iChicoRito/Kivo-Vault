@@ -171,7 +171,7 @@ describe('PasswordsPage vault gate', () => {
       await screen.findByRole('heading', { level: 1, name: 'Create a master password' }),
     ).toBeInTheDocument()
     expect(
-      screen.getByText('This password encrypts your saved logins. Kivo cannot recover it.'),
+      screen.getByText('This password encrypts your saved logins. If you forget it, only a recovery kit (Settings > Security) can replace it.'),
     ).toBeInTheDocument()
     expect(screen.getByLabelText('Confirm master password')).toBeInTheDocument()
   })

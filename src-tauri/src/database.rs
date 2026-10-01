@@ -145,6 +145,25 @@ pub struct DatabaseState {
     session_generation: AtomicU64,
     // The one file staged by `preview_file_import`, waiting for a decision.
     pending_import: Mutex<Option<PendingImport>>,
+    // A recovery kit shown to the user but not yet confirmed. Holds only the
+    // proposed wrapper and the secret for re-entry checks; never the data key.
+    pending_recovery: Mutex<Option<PendingRecovery>>,
+}
+
+/// A recovery kit that was created and shown but not yet confirmed. It is
+/// only usable while nothing it was built against has changed: same vault
+/// identity, same password slot, same previous recovery slot.
+pub(crate) struct PendingRecovery {
+    pub token: String,
+    pub scope: String,
+    pub created: std::time::Instant,
+    pub kit: zeroize::Zeroizing<String>,
+    pub vault_id: String,
+    pub key_generation: String,
+    pub password_slot_id: String,
+    pub previous_recovery_id: Option<String>,
+    pub recovery_id: String,
+    pub envelope_json: String,
 }
 
 /// A file copied into app-private staging so the bytes Kivo checked are the
@@ -349,6 +368,7 @@ impl DatabaseState {
             access_epoch: AtomicU64::new(0),
             session_generation: AtomicU64::new(0),
             pending_import: Mutex::new(None),
+            pending_recovery: Mutex::new(None),
         }
     }
 
@@ -369,6 +389,22 @@ impl DatabaseState {
     pub(crate) fn advance_session(&self) {
         self.session_generation.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut pending) = self.pending_import.lock() {
+            pending.take();
+        }
+        self.clear_pending_recovery();
+    }
+
+    pub(crate) fn pending_recovery(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Option<PendingRecovery>>, String> {
+        self.pending_recovery
+            .lock()
+            .map_err(|_| "Could not read the recovery kit setup".to_string())
+    }
+
+    /// Drops an unconfirmed recovery kit (on lock, restore, reset, password change).
+    pub(crate) fn clear_pending_recovery(&self) {
+        if let Ok(mut pending) = self.pending_recovery.lock() {
             pending.take();
         }
     }

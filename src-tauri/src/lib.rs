@@ -76,6 +76,7 @@ pub fn run() {
             vaults::list_vaults,
             vaults::switch_vault,
             vaults::create_vault,
+            vaults::delete_vault,
             database::load_boot_state,
             database::complete_setup,
             database::load_profile,

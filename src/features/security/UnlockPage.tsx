@@ -159,7 +159,7 @@ export default function UnlockPage({ onUnlocked }: UnlockPageProps) {
 
           <div className="grid justify-items-center gap-1 text-center">
             {/* Other vaults are listed by name only; each opens with its own password. */}
-            <VaultSwitcher canCreate={false} hideWhenSingle placement="bottom" />
+            <VaultSwitcher canManage={false} hideWhenSingle placement="bottom" />
             {recoveryEnabled ? (
               <Button size="sm" variant="ghost" onPress={() => setRecovering(true)}>
                 Forgot it? Use recovery kit

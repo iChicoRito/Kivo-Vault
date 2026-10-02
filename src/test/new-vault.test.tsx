@@ -142,7 +142,7 @@ describe('New vault', () => {
     })
     render(
       <VaultSwitchContext.Provider value={vi.fn()}>
-        <VaultSwitcher canCreate={false} hideWhenSingle />
+        <VaultSwitcher canManage={false} hideWhenSingle />
       </VaultSwitchContext.Provider>,
     )
 

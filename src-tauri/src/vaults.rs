@@ -220,6 +220,42 @@ impl VaultsState {
         write_registry(&self.data_dir, registry)
     }
 
+    /// Deletes the open vault after the user typed its name. Kivo first opens
+    /// another vault, so the deleted one is closed and locked before its files
+    /// go. Returns the vault that is open afterwards.
+    pub fn delete(&self, database: &DatabaseState, id: &str, confirm_name: &str) -> Result<VaultSummary, String> {
+        self.with_registry(database, |registry| {
+            let entry = registry
+                .entry(id)
+                .cloned()
+                .ok_or_else(|| "That vault no longer exists".to_string())?;
+            if registry.vaults.len() < 2 {
+                return Err("The last vault cannot be deleted.".to_string());
+            }
+            if registry.active_id != entry.id {
+                return Err("Open this vault before deleting it.".to_string());
+            }
+            if confirm_name.trim() != entry.name {
+                return Err("The name does not match. Type the vault name exactly.".to_string());
+            }
+            let next = registry
+                .vaults
+                .iter()
+                .find(|vault| vault.id != entry.id)
+                .cloned()
+                .expect("checked above: at least two vaults");
+            self.open_entry(database, registry, &next)?;
+            registry.vaults.retain(|vault| vault.id != entry.id);
+            write_registry(&self.data_dir, registry)?;
+            remove_vault_files(&vault_root(&self.data_dir, &entry), entry.legacy)
+                .map_err(|error| format!("The vault was removed from the list, but some files remain. {error}"))?;
+            Ok(VaultSummary {
+                id: next.id,
+                name: next.name,
+            })
+        })
+    }
+
     /// Creates an empty vault in its own folder and opens it. Setup (owner,
     /// Master Password, starter collections) follows through `complete_setup`.
     pub fn create(&self, database: &DatabaseState, name: &str) -> Result<VaultSummary, String> {
@@ -260,6 +296,36 @@ impl VaultsState {
             })
         })
     }
+}
+
+/// Deletes everything one vault keeps on disk. A vault in `vaults/<id>` is
+/// one folder; the legacy vault shares the app data folder with the vault
+/// list and the other vaults, so only its own entries are removed there.
+fn remove_vault_files(root: &Path, legacy: bool) -> Result<(), String> {
+    if !legacy {
+        return fs::remove_dir_all(root)
+            .or_else(|error| if root.exists() { Err(error) } else { Ok(()) })
+            .map_err(|error| format!("Could not delete the vault files: {error}"));
+    }
+    let mut failed = None;
+    let entries = fs::read_dir(root).map_err(|error| format!("Could not delete the vault files: {error}"))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let owned = matches!(
+            name.as_str(),
+            "kivo.db" | "kivo.db-wal" | "kivo.db-shm" | "kivo.db-journal" | "files"
+                | "files.content-conversion" | "device-unlock" | "pending-import" | "icons"
+        ) || name.starts_with(".kivo.db.");
+        if !owned {
+            continue;
+        }
+        let path = entry.path();
+        let removed = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+        if let Err(error) = removed {
+            failed = Some(format!("Could not delete {name}: {error}"));
+        }
+    }
+    failed.map_or(Ok(()), Err)
 }
 
 /// Creates the new vault's database and gives it the registry id, so the
@@ -307,6 +373,21 @@ pub fn create_vault(
     // The Password Manager key belongs to the vault that was left.
     passwords.clear();
     Ok(created)
+}
+
+#[tauri::command(async)]
+pub fn delete_vault(
+    id: String,
+    confirm_name: String,
+    vaults: State<'_, VaultsState>,
+    database: State<'_, DatabaseState>,
+    passwords: State<'_, crate::passwords::VaultKeyState>,
+) -> Result<VaultSummary, String> {
+    let result = vaults.delete(database.inner(), &id, &confirm_name);
+    // Cleared even on an error: if leftover files failed to delete, Kivo has
+    // already switched away from the vault this key belonged to.
+    passwords.clear();
+    result
 }
 
 #[cfg(test)]
@@ -630,5 +711,86 @@ mod tests {
         assert!(!data.0.join(VAULTS_DIR).read_dir().expect("vaults dir").any(|entry| {
             entry.expect("entry").file_name() != "second"
         }));
+    }
+
+    #[test]
+    fn the_last_vault_cannot_be_deleted() {
+        let data = DataDir::new("delete-last");
+        let state = open(&data.0);
+        setup(&state, "Work", "Projects");
+        let vaults = VaultsState::new(data.0.clone(), None, &data.0);
+        let id = vaults.list(&state).expect("list").active_id;
+
+        let error = vaults.delete(&state, &id, "Work").expect_err("refused");
+
+        assert_eq!(error, "The last vault cannot be deleted.");
+        assert!(data.0.join("kivo.db").is_file());
+        assert_eq!(vaults.list(&state).expect("list").vaults.len(), 1);
+    }
+
+    #[test]
+    fn delete_needs_the_exact_name_of_the_open_vault() {
+        let data = DataDir::new("delete-refused");
+        let (state, vaults) = two_vaults(&data);
+        let legacy = vaults.list(&state).expect("list").active_id;
+
+        assert_eq!(
+            vaults.delete(&state, &legacy, "work").expect_err("wrong case"),
+            "The name does not match. Type the vault name exactly."
+        );
+        assert_eq!(
+            vaults.delete(&state, "second", "Home").expect_err("not open"),
+            "Open this vault before deleting it."
+        );
+        assert_eq!(vaults.list(&state).expect("list").vaults.len(), 2);
+        assert_eq!(vaults.list(&state).expect("list").active_id, legacy);
+        assert!(contents(&state).contains(&"item:alpha note".to_string()));
+    }
+
+    #[test]
+    fn deleting_a_new_vault_removes_its_folder_and_keeps_the_rest() {
+        let data = DataDir::new("delete-new");
+        let (state, vaults) = two_vaults(&data);
+        let legacy = vaults.list(&state).expect("list").active_id;
+        let first = contents(&state);
+        vaults.switch(&state, "second").expect("open second");
+        state.content_key().store([3; 32]).expect("store key");
+
+        let opened = vaults.delete(&state, "second", " Home ").expect("delete");
+
+        assert_eq!(opened.id, legacy);
+        assert!(!data.0.join(VAULTS_DIR).join("second").exists());
+        assert!(state.content_key().require_key().is_err(), "deleted vault's key is gone");
+        let list = vaults.list(&state).expect("list");
+        assert_eq!(list.active_id, legacy);
+        assert_eq!(list.vaults.len(), 1);
+        assert_eq!(contents(&state), first);
+        assert_eq!(read_registry(&data.0).expect("registry").vaults.len(), 1);
+    }
+
+    #[test]
+    fn deleting_the_legacy_vault_keeps_the_other_vaults_and_the_list() {
+        let data = DataDir::new("delete-legacy");
+        let (state, vaults) = two_vaults(&data);
+        let legacy = vaults.list(&state).expect("list").active_id;
+        fs::write(state.files_dir().join("lease.pdf"), b"pdf").expect("managed file");
+        fs::create_dir_all(data.0.join(".kivo.db.pre-restore-1")).expect("old safety copy");
+        fs::write(data.0.join("unrelated.txt"), b"keep").expect("unrelated file");
+
+        let opened = vaults.delete(&state, &legacy, "Work").expect("delete");
+
+        assert_eq!(opened.id, "second");
+        for gone in ["kivo.db", "files", ".kivo.db.pre-restore-1"] {
+            assert!(!data.0.join(gone).exists(), "{gone} removed");
+        }
+        assert!(data.0.join("unrelated.txt").is_file(), "only the vault's own entries go");
+        assert!(data.0.join(REGISTRY_FILE).is_file());
+        assert!(data.0.join(VAULTS_DIR).join("second").join("kivo.db").is_file());
+        assert_eq!(contents(&state)[0], "item:beta note");
+
+        // Next start opens the remaining vault, not a fresh empty one.
+        let registry = read_registry(&data.0).expect("registry");
+        assert_eq!(registry.vaults.len(), 1);
+        assert_eq!(startup_root(&data.0, Some(&registry)), data.0.join(VAULTS_DIR).join("second"));
     }
 }

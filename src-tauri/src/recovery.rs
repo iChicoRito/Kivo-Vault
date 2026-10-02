@@ -472,7 +472,7 @@ mod tests {
                 )
                 .unwrap();
             crate::database::write_password_verifier(connection, &crate::security::hash_secret(CONTENT_PW).unwrap()).unwrap();
-            encryption::enable(connection, db.files_dir(), CONTENT_PW).unwrap()
+            encryption::enable(connection, &db.files_dir(), CONTENT_PW).unwrap()
         };
         let vault = VaultKeyState::default();
         passwords::setup_vault_with_state(&db, &vault, VAULT_PW).unwrap();
@@ -767,7 +767,7 @@ mod tests {
         let kit = enroll(&db, "content", "set again");
         {
             let mut guard = db.require_connection().unwrap();
-            encryption::enable(guard.as_mut().unwrap(), db.files_dir(), "set again").unwrap();
+            encryption::enable(guard.as_mut().unwrap(), &db.files_dir(), "set again").unwrap();
         }
         assert!(!enabled(&db, "content"), "encryption replaces the app-lock kit");
         assert!(recover_with_state(&db, &vault, "content", &kit, "new password").is_err());

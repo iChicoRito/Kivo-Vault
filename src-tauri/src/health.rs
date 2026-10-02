@@ -212,7 +212,7 @@ pub fn check_vault_health(
 
     check_vault(
         connection,
-        state.files_dir(),
+        &state.files_dir(),
         content_key.as_ref(),
         content_locked,
         vault.require_key().ok().as_ref(),
@@ -256,7 +256,7 @@ pub fn repair_vault_health(
                 .map_err(|error| format!("Could not find the Documents folder: {error}"))?
                 .join("Kivo Recovered Files")
                 .join(stamp);
-            move_stray_files(connection, state.files_dir(), &ids, &destination)
+            move_stray_files(connection, &state.files_dir(), &ids, &destination)
         }
         _ => Err("Unknown repair".to_string()),
     }

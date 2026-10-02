@@ -1850,7 +1850,7 @@ fn load_item_with_state(state: &DatabaseState, id: &str) -> Result<Item, String>
     let key = encryption::key_if_enabled(connection, state.content_key())?;
     ensure_item_accessible(connection, state, id)?;
 
-    let item = read_item(connection, state.files_dir(), id)
+    let item = read_item(connection, &state.files_dir(), id)
         .map_err(|error| format!("Could not read the item: {error}"))?;
 
     let Some(mut item) = item else {
@@ -1895,7 +1895,7 @@ fn list_items_with_state(
     }
     let locked = locked_collection_ids(connection, state)?;
 
-    read_item_summaries(connection, state.files_dir(), filter, key.as_ref(), &locked)
+    read_item_summaries(connection, &state.files_dir(), filter, key.as_ref(), &locked)
         .map_err(|error| format!("Could not list the items: {error}"))
 }
 
@@ -1976,7 +1976,7 @@ fn capture_item_with_state(state: &DatabaseState, input: &ItemInput) -> Result<C
             WriteOutcome::Duplicate(ids) => {
                 let files_dir = state.files_dir();
                 let (matches, access_epoch) = if state.access_epoch() == epoch {
-                    (duplicate_matches(connection, files_dir, key.as_ref(), &ids, "url")?, epoch)
+                    (duplicate_matches(connection, &files_dir, key.as_ref(), &ids, "url")?, epoch)
                 } else {
                     let canonical = input.url.as_deref().and_then(canonical_source_url).unwrap_or_default();
                     current_matches(
@@ -1989,7 +1989,7 @@ fn capture_item_with_state(state: &DatabaseState, input: &ItemInput) -> Result<C
                                 &canonical,
                                 input.id.as_deref(),
                             )?;
-                            duplicate_matches(connection, files_dir, key.as_ref(), &ids, "url")
+                            duplicate_matches(connection, &files_dir, key.as_ref(), &ids, "url")
                         },
                         connection,
                     )?
@@ -2431,7 +2431,7 @@ fn delete_items_permanently_with_state(
     let connection = connection.as_mut().expect("checked above");
     ensure_items_accessible(connection, state, ids)?;
 
-    remove_items_permanently(connection, state.files_dir(), ids)
+    remove_items_permanently(connection, &state.files_dir(), ids)
 }
 
 fn load_vault_summary_with_state(state: &DatabaseState) -> Result<VaultSummary, String> {
@@ -2869,13 +2869,13 @@ fn file_matches(
         |locked| {
             let ids = duplicates::find_file_matches(
                 connection,
-                state.files_dir(),
+                &state.files_dir(),
                 key,
                 locked,
                 digest,
                 byte_size,
             )?;
-            duplicate_matches(connection, state.files_dir(), key, &ids, "file-content")
+            duplicate_matches(connection, &state.files_dir(), key, &ids, "file-content")
         },
         connection,
     )
@@ -3002,7 +3002,7 @@ fn commit_file_import_with_state(
 
         // Owning the pending import means it is deleted however this ends.
         let pending = slot.take().expect("checked above");
-        fs::create_dir_all(state.files_dir())
+        fs::create_dir_all(&state.files_dir())
             .map_err(|error| format!("Could not create the managed folder: {error}"))?;
         let bytes = match key.as_ref() {
             Some(key) => {
@@ -3013,7 +3013,7 @@ fn commit_file_import_with_state(
         };
         write_import(
             connection,
-            state.files_dir(),
+            &state.files_dir(),
             bytes,
             &pending.original_name,
             pending.byte_size,
@@ -5442,7 +5442,7 @@ mod tests {
                 &crate::security::hash_secret(password).expect("hash password"),
             )
             .expect("store password verifier");
-            encryption::enable(connection, state.files_dir(), password).expect("enable encryption")
+            encryption::enable(connection, &state.files_dir(), password).expect("enable encryption")
         };
         state.content_key().store(key).expect("store content key");
         key
@@ -5544,7 +5544,7 @@ mod tests {
         {
             let mut connection = state.require_connection().expect("lock connection");
             let connection = connection.as_mut().expect("connection is initialized");
-            encryption::disable(connection, state.files_dir(), "master-pass").expect("disable");
+            encryption::disable(connection, &state.files_dir(), "master-pass").expect("disable");
         }
         state.content_key().clear().expect("clear key");
         let connection = state.require_connection().expect("lock connection");
@@ -5798,7 +5798,7 @@ mod tests {
             let mut connection = state.require_connection().expect("lock connection");
             encryption::disable(
                 connection.as_mut().expect("connection is initialized"),
-                state.files_dir(),
+                &state.files_dir(),
                 "master-pass",
             )
             .expect("disable encryption");
@@ -6089,7 +6089,7 @@ mod tests {
 
         {
             let mut connection = state.require_connection().unwrap();
-            encryption::disable(connection.as_mut().unwrap(), state.files_dir(), "master-pass").expect("disable");
+            encryption::disable(connection.as_mut().unwrap(), &state.files_dir(), "master-pass").expect("disable");
         }
         state.content_key().clear().unwrap();
         assert_eq!(digest_of(&plain.id), raw);

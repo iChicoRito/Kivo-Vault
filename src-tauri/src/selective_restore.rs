@@ -157,7 +157,7 @@ pub(crate) fn list_backup_items(
                     .and_then(|bytes| {
                         crate::duplicates::find_file_matches(
                             connection,
-                            state.files_dir(),
+                            &state.files_dir(),
                             key.as_ref(),
                             locked,
                             &crate::duplicates::hash_bytes(&bytes),
@@ -195,7 +195,7 @@ pub(crate) fn restore_backup_items(
     let mut connection = state.require_connection()?;
     portability::copy_items_from(
         connection.as_mut().expect("checked above"),
-        state.files_dir(),
+        &state.files_dir(),
         state.content_key(),
         opened.connection(),
         &opened.keys,
@@ -264,7 +264,7 @@ mod tests {
         fn vault(&self, name: &str) -> DatabaseState {
             let state = DatabaseState::new(self.0.join(name).join("kivo.db"), self.0.join(name).join("files"));
             state.initialize().expect("initialize vault");
-            fs::create_dir_all(state.files_dir()).expect("files folder");
+            fs::create_dir_all(&state.files_dir()).expect("files folder");
             fs::create_dir_all(self.0.join("backups")).expect("backups folder");
             state
         }
@@ -298,7 +298,7 @@ mod tests {
         let connection = connection.as_mut().expect("initialized");
         let verifier = crate::security::hash_secret(PASSWORD).expect("hash");
         crate::database::write_password_verifier(connection, &verifier).expect("verifier");
-        encryption::enable(connection, state.files_dir(), PASSWORD).expect("encrypt vault");
+        encryption::enable(connection, &state.files_dir(), PASSWORD).expect("encrypt vault");
     }
 
     fn live_items(state: &DatabaseState) -> Vec<(String, portability::PortableItem)> {
@@ -314,7 +314,7 @@ mod tests {
         seed(&old);
         let backup = {
             let connection = old.require_connection().expect("connection");
-            backup::create_backup_in(connection.as_ref().expect("initialized"), old.files_dir(), &temp.0.join("backups"))
+            backup::create_backup_in(connection.as_ref().expect("initialized"), &old.files_dir(), &temp.0.join("backups"))
                 .expect("backup")
         };
         let backup_path = Path::new(&backup.path);
@@ -347,7 +347,7 @@ mod tests {
             let connection = old.require_connection().expect("connection");
             backup::create_sealed_backup_in(
                 connection.as_ref().expect("initialized"),
-                old.files_dir(),
+                &old.files_dir(),
                 &temp.0.join("backups"),
                 PASSWORD,
             )
@@ -380,7 +380,7 @@ mod tests {
         seed(&old);
         let backup = {
             let connection = old.require_connection().expect("connection");
-            backup::create_backup_in(connection.as_ref().expect("initialized"), old.files_dir(), &temp.0.join("backups"))
+            backup::create_backup_in(connection.as_ref().expect("initialized"), &old.files_dir(), &temp.0.join("backups"))
                 .expect("backup")
         };
         let opened = open_backup(Path::new(&backup.path), None, None).expect("open");
@@ -397,7 +397,7 @@ mod tests {
         seed(&old);
         let backup = {
             let connection = old.require_connection().expect("connection");
-            backup::create_backup_in(connection.as_ref().expect("initialized"), old.files_dir(), &temp.0.join("backups"))
+            backup::create_backup_in(connection.as_ref().expect("initialized"), &old.files_dir(), &temp.0.join("backups"))
                 .expect("backup")
         };
         let backup_path = Path::new(&backup.path);
@@ -440,7 +440,7 @@ mod tests {
         crate::recovery::confirm_with_state(&old, &draft.token, &draft.recovery_key).expect("confirm kit");
         let backup = {
             let connection = old.require_connection().expect("connection");
-            backup::create_sealed_backup_in(connection.as_ref().expect("initialized"), old.files_dir(), &temp.0.join("backups"), PASSWORD)
+            backup::create_sealed_backup_in(connection.as_ref().expect("initialized"), &old.files_dir(), &temp.0.join("backups"), PASSWORD)
                 .expect("sealed backup")
         };
         let backup_path = Path::new(&backup.path);

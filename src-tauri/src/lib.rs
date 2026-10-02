@@ -14,6 +14,7 @@ mod recovery;
 mod security;
 mod selective_restore;
 mod vault;
+mod vaults;
 
 /// Lives here because it touches both backup and the password vault, and the
 /// integration tests compile `backup.rs` without `passwords.rs`.
@@ -57,19 +58,23 @@ pub fn run() {
             encryption::clear_temp_files();
 
             let data_dir = app.path().app_local_data_dir()?;
-            let database =
-                database::DatabaseState::new(data_dir.join("kivo.db"), data_dir.join("files"));
+            let registry = vaults::read_registry(&data_dir);
+            let root = vaults::startup_root(&data_dir, registry.as_ref());
+            let database = database::DatabaseState::new(root.join("kivo.db"), root.join("files"));
             // Files staged for an import decision must not outlive the session.
             let _ = std::fs::remove_dir_all(database.staging_dir());
 
             // Try migration during startup. Failed attempts remain retryable through the command.
             let _ = database.initialize();
             app.manage(database);
+            app.manage(vaults::VaultsState::new(data_dir, registry, &root));
             app.manage(passwords::VaultKeyState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             database::initialize_database,
+            vaults::list_vaults,
+            vaults::switch_vault,
             database::load_boot_state,
             database::complete_setup,
             database::load_profile,

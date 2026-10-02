@@ -31,11 +31,12 @@ fn cache_name(host: &str) -> String {
         .collect()
 }
 
+// Kept inside the open vault's folder so one vault's cache never reveals
+// another vault's saved sites.
 fn cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?
+        .state::<crate::database::DatabaseState>()
+        .root()
         .join(ICON_DIR);
 
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;

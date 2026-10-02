@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 
 use argon2::password_hash::phc::PasswordHash;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -33,6 +33,7 @@ const CREDENTIAL_HISTORY_MIGRATION: &str =
 const CAPTURE_FINGERPRINTS_MIGRATION: &str =
     include_str!("../migrations/0019_capture_fingerprints.sql");
 const VAULT_KEY_SLOTS_MIGRATION: &str = include_str!("../migrations/0020_vault_key_slots.sql");
+const VAULT_IDENTITY_MIGRATION: &str = include_str!("../migrations/0021_vault_identity.sql");
 
 struct Migration {
     version: i64,
@@ -122,12 +123,17 @@ const MIGRATIONS: &[Migration] = &[
         version: 20,
         sql: VAULT_KEY_SLOTS_MIGRATION,
     },
+    Migration {
+        version: 21,
+        sql: VAULT_IDENTITY_MIGRATION,
+    },
 ];
 
 pub struct DatabaseState {
     connection: Mutex<Option<Connection>>,
-    path: PathBuf,
-    files_dir: PathBuf,
+    // Database file and managed files folder of the open vault. Swapped by
+    // `open_root` when the user switches vaults.
+    paths: RwLock<(PathBuf, PathBuf)>,
     // The in-memory content key lives with the connection so one managed state
     // owns both and the commands cannot disagree about which vault is open.
     content_key: crate::encryption::ContentKeyState,
@@ -360,8 +366,7 @@ impl DatabaseState {
     pub fn new(path: PathBuf, files_dir: PathBuf) -> Self {
         Self {
             connection: Mutex::new(None),
-            path,
-            files_dir,
+            paths: RwLock::new((path, files_dir)),
             content_key: crate::encryption::ContentKeyState::default(),
             unlocked_collections: Mutex::new(HashSet::new()),
             attempts: Mutex::new(Attempts::default()),
@@ -419,19 +424,13 @@ impl DatabaseState {
 
     /// App-private folder for staged imports, next to the database.
     pub(crate) fn staging_dir(&self) -> PathBuf {
-        self.path
-            .parent()
-            .map(|parent| parent.join("pending-import"))
-            .unwrap_or_else(|| PathBuf::from("pending-import"))
+        self.root().join("pending-import")
     }
 
     /// Windows Hello setups for this installation: outside the database and
     /// the managed files, so backups and exports never include them.
     pub(crate) fn device_dir(&self) -> PathBuf {
-        self.path
-            .parent()
-            .map(|parent| parent.join("device-unlock"))
-            .unwrap_or_else(|| PathBuf::from("device-unlock"))
+        self.root().join("device-unlock")
     }
 
     /// Removes the Windows Hello setup for one vault (`content` or
@@ -481,19 +480,16 @@ impl DatabaseState {
             return Ok(());
         }
 
-        if let Some(parent) = self
-            .path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
+        let (path, files_dir) = self.paths();
+        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("Could not create local database directory: {error}"))?;
         }
 
-        fs::create_dir_all(&self.files_dir)
+        fs::create_dir_all(&files_dir)
             .map_err(|error| format!("Could not create managed files directory: {error}"))?;
 
-        let mut connection = Connection::open(&self.path)
+        let mut connection = Connection::open(&path)
             .map_err(|error| format!("Could not open local database: {error}"))?;
         connection
             .pragma_update(None, "foreign_keys", "ON")
@@ -505,7 +501,7 @@ impl DatabaseState {
             .map_err(|error| format!("Could not enable secure delete: {error}"))?;
         apply_migrations(&mut connection)
             .map_err(|error| format!("Could not migrate local database: {error}"))?;
-        crate::encryption::recover_files(&connection, &self.files_dir)?;
+        crate::encryption::recover_files(&connection, &files_dir)?;
 
         *stored_connection = Some(connection);
         Ok(())
@@ -527,12 +523,52 @@ impl DatabaseState {
         Ok(connection)
     }
 
-    pub(crate) fn files_dir(&self) -> &Path {
-        &self.files_dir
+    fn paths(&self) -> (PathBuf, PathBuf) {
+        self.paths
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
     }
 
-    pub(crate) fn database_path(&self) -> &Path {
-        &self.path
+    pub(crate) fn files_dir(&self) -> PathBuf {
+        self.paths().1
+    }
+
+    pub(crate) fn database_path(&self) -> PathBuf {
+        self.paths().0
+    }
+
+    /// Folder of the open vault: holds the database and its sibling folders.
+    pub(crate) fn root(&self) -> PathBuf {
+        let path = self.database_path();
+        match path.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => PathBuf::new(),
+        }
+    }
+
+    /// Switches this state to the vault stored in `root`. Everything unlocked
+    /// in the old vault (content key, opened collections, staged work) is
+    /// dropped first, so the vault that was left is locked again.
+    #[allow(dead_code)]
+    pub(crate) fn open_root(&self, root: &Path) -> Result<(), String> {
+        let _ = self.content_key.clear();
+        self.clear_unlocked_collections();
+        self.advance_session();
+        {
+            // Held while the paths change, so no command opens the old vault
+            // again in between.
+            let mut stored = self.lock_connection()?;
+            drop(stored.take());
+            let mut paths = self
+                .paths
+                .write()
+                .map_err(|_| "Local database lock is poisoned".to_string())?;
+            *paths = (root.join("kivo.db"), root.join("files"));
+        }
+        crate::encryption::clear_temp_files();
+        let _ = fs::remove_dir_all(self.staging_dir());
+        self.initialize()
     }
 
     pub(crate) fn content_key(&self) -> &crate::encryption::ContentKeyState {
@@ -595,7 +631,7 @@ impl DatabaseState {
 
         let mut removed = Ok(());
         for suffix in ["", "-wal", "-shm", "-journal"] {
-            let mut name = self.path.as_os_str().to_owned();
+            let mut name = self.database_path().into_os_string();
             name.push(suffix);
             let path = PathBuf::from(name);
             if path.exists() {
@@ -605,8 +641,8 @@ impl DatabaseState {
             }
         }
         for dir in [
-            self.files_dir.clone(),
-            self.files_dir.with_extension("content-conversion"),
+            self.files_dir(),
+            self.files_dir().with_extension("content-conversion"),
         ] {
             if dir.exists() {
                 if let Err(error) = fs::remove_dir_all(&dir) {
@@ -1227,7 +1263,7 @@ mod tests {
             .expect("mark password vault version");
         connection.execute("INSERT INTO credentials(id, service, password_nonce, password_ciphertext, created_at, updated_at) VALUES ('credential-1', 'Kept', x'010203', x'040506', '2026-01-01', '2026-01-01')", []).expect("seed credential");
         apply_migrations(&mut connection).expect("upgrade version 10 vault");
-        assert_eq!(read_user_version(&connection), 20);
+        assert_eq!(read_user_version(&connection), 21);
         assert!(table_exists(&connection, "credentials"));
         assert!(table_exists(&connection, "item_search"));
         assert!(table_exists(&connection, "item_versions"));
@@ -1244,7 +1280,7 @@ mod tests {
         apply_migrations(&mut connection).expect("first migration");
         apply_migrations(&mut connection).expect("second migration");
 
-        assert_eq!(read_user_version(&connection), 20);
+        assert_eq!(read_user_version(&connection), 21);
 
         for table in [
             "profile",
@@ -1290,7 +1326,7 @@ mod tests {
         let mut connection = Connection::open_in_memory().expect("open in-memory database");
 
         apply_migrations(&mut connection).expect("first migration");
-        assert_eq!(read_user_version(&connection), 20);
+        assert_eq!(read_user_version(&connection), 21);
 
         // Dropping a table gives the test a way to detect whether the migration ran again.
         connection
@@ -1303,7 +1339,7 @@ mod tests {
             !table_exists(&connection, "preferences"),
             "an up-to-date database must not re-run its migration"
         );
-        assert_eq!(read_user_version(&connection), 20);
+        assert_eq!(read_user_version(&connection), 21);
     }
 
     #[test]
@@ -1326,7 +1362,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 20);
+        assert_eq!(read_user_version(&connection), 21);
         assert_eq!(
             read_preferences(&connection).expect("read preferences"),
             Preferences {
@@ -1402,7 +1438,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 20);
+        assert_eq!(read_user_version(&connection), 21);
         assert!(
             !table_exists(&connection, "starter_collections"),
             "the onboarding table is dropped after the copy"
@@ -1485,7 +1521,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 20);
+        assert_eq!(read_user_version(&connection), 21);
 
         let (title, content, is_pinned, deleted_at, icon): (
             String,
@@ -1550,7 +1586,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 20);
+        assert_eq!(read_user_version(&connection), 21);
         let collections_view: String = connection
             .query_row(
                 "SELECT collections_view FROM preferences WHERE id = 1",
@@ -1593,7 +1629,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 20);
+        assert_eq!(read_user_version(&connection), 21);
         let (protection, secret_hash): (String, Option<String>) = connection
             .query_row(
                 "SELECT protection, secret_hash FROM collections WHERE id = 'col-old'",
@@ -1652,7 +1688,7 @@ mod tests {
 
         apply_migrations(&mut connection).expect("upgrade database");
 
-        assert_eq!(read_user_version(&connection), 20);
+        assert_eq!(read_user_version(&connection), 21);
         let tags: String = connection
             .query_row("SELECT tags FROM items WHERE id = 'item-1'", [], |row| {
                 row.get(0)
@@ -1839,7 +1875,7 @@ mod tests {
             .complete_setup(setup_input(&["Projects", "Recipes"], Some(VERIFIER)))
             .expect("complete setup");
 
-        let connection = Connection::open(workspace.database_path()).expect("reopen database");
+        let connection = Connection::open(&workspace.database_path()).expect("reopen database");
 
         let profile = read_profile(&connection).expect("read profile");
         assert_eq!(profile.owner_name, "Ada");
@@ -1916,7 +1952,7 @@ mod tests {
         let result = state.complete_setup(setup_input(&["Recipes"], Some(VERIFIER)));
         assert!(result.is_err(), "duplicate collection must fail setup");
 
-        let connection = Connection::open(workspace.database_path()).expect("reopen database");
+        let connection = Connection::open(&workspace.database_path()).expect("reopen database");
 
         let setup_completed_at: Option<String> = connection
             .query_row(
@@ -1948,7 +1984,7 @@ mod tests {
         let blank_collection = setup_input(&["   "], None);
         assert!(state.complete_setup(blank_collection).is_err());
 
-        let connection = Connection::open(workspace.database_path()).expect("reopen database");
+        let connection = Connection::open(&workspace.database_path()).expect("reopen database");
         assert_eq!(row_count(&connection, "profile"), 0);
     }
 
@@ -1990,7 +2026,7 @@ mod tests {
             "leaked SQL: {error}"
         );
 
-        let connection = Connection::open(workspace.database_path()).expect("reopen database");
+        let connection = Connection::open(&workspace.database_path()).expect("reopen database");
         assert_eq!(row_count(&connection, "profile"), 0);
     }
 
@@ -2120,7 +2156,7 @@ mod tests {
         state.set_password_verifier(valid).expect("set verifier");
 
         {
-            let connection = Connection::open(workspace.database_path()).expect("reopen database");
+            let connection = Connection::open(&workspace.database_path()).expect("reopen database");
             assert_eq!(
                 connection
                     .query_row(

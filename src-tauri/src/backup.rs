@@ -16,7 +16,7 @@ use zeroize::Zeroizing;
 
 const FORMAT: i64 = 1;
 const MIN_SCHEMA: i64 = 12;
-const MAX_SCHEMA: i64 = 20;
+const MAX_SCHEMA: i64 = 21;
 const DATABASE: &str = "kivo.db";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -649,7 +649,7 @@ pub(crate) fn restore_into(state: &DatabaseState, path: &Path) -> Result<Restore
     state.revoke_device_unlock("content");
     state.revoke_device_unlock("passwords");
     state.close_connection()?;
-    let result = restore_backup_at(path, state.database_path(), state.files_dir());
+    let result = restore_backup_at(path, &state.database_path(), &state.files_dir());
     let reopened = state.reopen_connection();
     match (result, reopened) {
         (Ok(summary), Ok(())) => Ok(summary),
@@ -1097,7 +1097,7 @@ fn backup_for_lock(
         .map_err(|e| e.to_string())?
         .filter(|_| crate::database::has_stored_password_lock(connection).unwrap_or(false));
     let Some(verifier) = verifier else {
-        return create_backup_in(connection, state.files_dir(), parent);
+        return create_backup_in(connection, &state.files_dir(), parent);
     };
     let password = password.ok_or("Enter your Master Password to encrypt the backup.")?;
     state.check_attempt()?;
@@ -1106,7 +1106,7 @@ fn backup_for_lock(
     if !matched {
         return Err("Incorrect Master Password".into());
     }
-    create_sealed_backup_in(connection, state.files_dir(), parent, password)
+    create_sealed_backup_in(connection, &state.files_dir(), parent, password)
 }
 
 #[tauri::command]
@@ -1141,7 +1141,7 @@ pub fn create_backup(
     }
     create_backup_at(
         connection,
-        state.files_dir(),
+        &state.files_dir(),
         Path::new(&destination),
         replace,
     )

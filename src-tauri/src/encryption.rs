@@ -1035,7 +1035,7 @@ pub fn enable_encryption(
     let mut guard = state.require_connection()?;
     let connection = guard.as_mut().expect("checked above");
     state.check_attempt()?;
-    let key = enable(connection, state.files_dir(), &password);
+    let key = enable(connection, &state.files_dir(), &password);
     record_password_result(&state, &key);
     let key = key?;
     // A file staged before the switch was staged unencrypted.
@@ -1063,7 +1063,7 @@ pub fn disable_encryption(
     state.check_attempt()?;
     let result = disable(
         guard.as_mut().expect("checked above"),
-        state.files_dir(),
+        &state.files_dir(),
         &password,
     );
     record_password_result(&state, &result);

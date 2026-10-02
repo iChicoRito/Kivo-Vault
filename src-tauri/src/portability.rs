@@ -1057,7 +1057,7 @@ pub fn export_items_json(
     };
     write_document(
         connection,
-        state.files_dir(),
+        &state.files_dir(),
         keys,
         &document,
         Path::new(&path),
@@ -1128,7 +1128,7 @@ pub fn export_vault_json(path: String, state: State<'_, DatabaseState>) -> Resul
     let locked = crate::database::locked_collection_ids(connection, &state)?;
     export_vault_into(
         connection,
-        state.files_dir(),
+        &state.files_dir(),
         state.content_key(),
         Path::new(&path),
         &locked,
@@ -1142,7 +1142,7 @@ pub fn import_json(path: String, state: State<'_, DatabaseState>) -> Result<Impo
     let locked = crate::database::locked_collection_ids(connection, &state)?;
     import_json_into(
         connection,
-        state.files_dir(),
+        &state.files_dir(),
         state.content_key(),
         Path::new(&path),
         &locked,

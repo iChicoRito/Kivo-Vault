@@ -568,7 +568,7 @@ fn encryption_on_writes_no_vectors_and_locked_reads_return_empty() {
         let connection = guard.as_mut().unwrap();
         database::write_password_verifier(connection, &security::hash_secret("pass").unwrap())
             .unwrap();
-        encryption::enable(connection, state.files_dir(), "pass").unwrap()
+        encryption::enable(connection, &state.files_dir(), "pass").unwrap()
     };
 
     // The content now lives only in item_secrets; the vault starts locked.

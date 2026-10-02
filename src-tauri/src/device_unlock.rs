@@ -623,7 +623,7 @@ mod tests {
             let mut guard = db.require_connection().unwrap();
             let connection = guard.as_mut().unwrap();
             crate::database::write_password_verifier(connection, &crate::security::hash_secret(CONTENT_PW).unwrap()).unwrap();
-            encrypted.then(|| encryption::enable(connection, db.files_dir(), CONTENT_PW).unwrap())
+            encrypted.then(|| encryption::enable(connection, &db.files_dir(), CONTENT_PW).unwrap())
         };
         let vault = VaultKeyState::default();
         crate::passwords::setup_vault_with_state(&db, &vault, VAULT_PW).unwrap();

@@ -210,7 +210,7 @@ fn migration_20_adds_empty_key_tables_and_is_repeatable() {
     database::apply_migrations(&mut connection).unwrap();
     database::apply_migrations(&mut connection).unwrap();
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
     let rows: i64 = connection.query_row("SELECT COUNT(*) FROM vault_keys", [], |row| row.get(0)).unwrap();
     assert_eq!(rows, 0);
 }

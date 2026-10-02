@@ -4,6 +4,7 @@ import { FingerPrintScanIcon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 
 import PageHeader from '../../app/PageHeader'
+import VaultSwitcher from '../../app/VaultSwitcher'
 import { readAppLockVerifier } from '../../data/security'
 import { unlockVault as unlockContentVault } from '../../data/protection'
 import { errorText, readRecoveryStatus } from '../../data/recovery'
@@ -157,6 +158,8 @@ export default function UnlockPage({ onUnlocked }: UnlockPageProps) {
           </div>
 
           <div className="grid justify-items-center gap-1 text-center">
+            {/* Other vaults are listed by name only; each opens with its own password. */}
+            <VaultSwitcher hideWhenSingle placement="bottom" />
             {recoveryEnabled ? (
               <Button size="sm" variant="ghost" onPress={() => setRecovering(true)}>
                 Forgot it? Use recovery kit

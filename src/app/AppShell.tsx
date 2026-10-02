@@ -9,6 +9,7 @@ import { AnimatedThemeToggler } from '../components/ui/animated-theme-toggler'
 import { notifyError } from '../lib/feedback'
 import { cn } from '../lib/utils'
 import AppDock from './AppDock'
+import VaultSwitcher from './VaultSwitcher'
 import AppSidebar from './AppSidebar'
 import NavbarSearch from './NavbarSearch'
 import { CommandPalette } from './CommandPalette'
@@ -75,7 +76,7 @@ function useHideOnScroll(scrollerRef: RefObject<HTMLElement | null>) {
   return hidden
 }
 
-function AppNavbar({ hidden }: { hidden: boolean }) {
+function AppNavbar({ hidden, showVaults }: { hidden: boolean; showVaults: boolean }) {
   return (
     <header
       id="kivo-navbar"
@@ -95,6 +96,8 @@ function AppNavbar({ hidden }: { hidden: boolean }) {
       />
       <NavbarSearch />
       <div className="flex items-center gap-2">
+        {/* The sidebar has its own switcher; the dock has no room for one. */}
+        {showVaults ? <VaultSwitcher className="max-w-48" /> : null}
         <ThemeToggle />
       </div>
     </header>
@@ -188,7 +191,7 @@ export default function AppShell({ startTour = false }: { startTour?: boolean })
           role="main"
           tabIndex={-1}
         >
-          <AppNavbar hidden={hidden} />
+          <AppNavbar hidden={hidden} showVaults={navigationStyle === 'dock'} />
 
           <div id="kivo-content">
             <Outlet />

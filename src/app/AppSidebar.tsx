@@ -26,6 +26,7 @@ import { cn } from '../lib/utils'
 import { useScrollDrag } from './AppDock'
 import { useLock } from './lock'
 import { navigationGroups } from './navigation'
+import VaultSwitcher from './VaultSwitcher'
 
 function initials(name: string) {
   const letters = name
@@ -192,6 +193,13 @@ export default function AppSidebar() {
             ))}
           </ScrollShadow>
           <Separator />
+          <div className="px-3 pt-3">
+            <VaultSwitcher
+              className="w-full max-[52.5rem]:justify-center max-[52.5rem]:px-0"
+              labelClassName="max-[52.5rem]:hidden"
+              placement="top start"
+            />
+          </div>
           <SidebarProfile pathname={pathname} />
         </Surface>
       </nav>

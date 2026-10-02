@@ -171,6 +171,15 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
       throw new Error('This action needs the Kivo desktop app.')
     case 'initialize_database':
       return undefined as T
+    // The preview keeps one vault in browser storage.
+    case 'list_vaults':
+      return {
+        activeId: 'browser-preview',
+        vaults: [{ id: 'browser-preview', name: state.profile.vaultName || 'My Vault' }],
+      } as T
+    case 'switch_vault':
+      if (args.id === 'browser-preview') return undefined as T
+      throw new Error('That vault no longer exists')
     case 'load_boot_state':
       return getBootState(state) as T
     case 'complete_setup': {

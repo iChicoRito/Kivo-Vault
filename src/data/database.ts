@@ -10,3 +10,8 @@ export function initializeDatabase(): Promise<void> {
 
   return initialization
 }
+
+/** Forgets the finished start-up so the next call checks the newly opened vault. */
+export function resetDatabaseInitialization() {
+  initialization = undefined
+}

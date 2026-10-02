@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { BrowserRouter } from 'react-router-dom'
 import { AppRoutes } from './app/router'
 import { PreferencesProvider } from './app/preferences'
@@ -6,7 +6,9 @@ import { LockProvider } from './app/lock'
 import { VaultProvider } from './app/vault'
 import StatusScreen from './app/StatusScreen'
 import { FeedbackToastRegion } from './components/ui/FeedbackToast'
-import { initializeDatabase } from './data/database'
+import { initializeDatabase, resetDatabaseInitialization } from './data/database'
+import { switchVault } from './data/vaults'
+import { VaultSwitchContext } from './app/vaults'
 import { loadBootState, type BootState } from './data/setup'
 import OnboardingPage from './features/onboarding/OnboardingPage'
 
@@ -48,6 +50,14 @@ export function App() {
     }
   }, [attempt])
 
+  // Opening another vault restarts the boot flow: the loading screen unmounts
+  // every page, then the target vault boots as onboarding, locked or ready.
+  const switchTo = useCallback(async (id: string) => {
+    await switchVault(id)
+    resetDatabaseInitialization()
+    setAttempt((value) => value + 1)
+  }, [])
+
   if (startup.status === 'loading') {
     return <StatusScreen status="loading" />
   }
@@ -58,7 +68,11 @@ export function App() {
 
   const route: BootState = enteredApp ? 'ready' : startup.route
 
-  return <BootRoute route={route} startTour={enteredApp} onEnterApp={() => setEnteredApp(true)} />
+  return (
+    <VaultSwitchContext.Provider value={switchTo}>
+      <BootRoute route={route} startTour={enteredApp} onEnterApp={() => setEnteredApp(true)} />
+    </VaultSwitchContext.Provider>
+  )
 }
 
 function BootRoute({

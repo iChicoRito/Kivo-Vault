@@ -180,6 +180,8 @@ export async function browserInvoke<T>(command: string, args: InvokeArgs = {}): 
     case 'switch_vault':
       if (args.id === 'browser-preview') return undefined as T
       throw new Error('That vault no longer exists')
+    case 'create_vault':
+      throw new Error('Creating vaults needs the Kivo desktop app.')
     case 'load_boot_state':
       return getBootState(state) as T
     case 'complete_setup': {

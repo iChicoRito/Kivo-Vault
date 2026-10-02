@@ -196,21 +196,84 @@ impl VaultsState {
                 .entry(id)
                 .cloned()
                 .ok_or_else(|| "That vault no longer exists".to_string())?;
-            let previous = registry
-                .entry(&registry.active_id)
-                .map(|entry| vault_root(&self.data_dir, entry));
-            let root = vault_root(&self.data_dir, &entry);
-            if let Err(error) = database.open_root(&root) {
-                // Never leave the app without a database.
-                if let Some(previous) = previous {
-                    let _ = database.open_root(&previous);
-                }
-                return Err(error);
-            }
-            registry.active_id = entry.id;
-            write_registry(&self.data_dir, registry)
+            self.open_entry(database, registry, &entry)
         })
     }
+
+    fn open_entry(
+        &self,
+        database: &DatabaseState,
+        registry: &mut Registry,
+        entry: &VaultEntry,
+    ) -> Result<(), String> {
+        let previous = registry
+            .entry(&registry.active_id)
+            .map(|entry| vault_root(&self.data_dir, entry));
+        if let Err(error) = database.open_root(&vault_root(&self.data_dir, entry)) {
+            // Never leave the app without a database.
+            if let Some(previous) = previous {
+                let _ = database.open_root(&previous);
+            }
+            return Err(error);
+        }
+        registry.active_id = entry.id.clone();
+        write_registry(&self.data_dir, registry)
+    }
+
+    /// Creates an empty vault in its own folder and opens it. Setup (owner,
+    /// Master Password, starter collections) follows through `complete_setup`.
+    pub fn create(&self, database: &DatabaseState, name: &str) -> Result<VaultSummary, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Enter a name for the vault.".to_string());
+        }
+        self.with_registry(database, |registry| {
+            if registry
+                .vaults
+                .iter()
+                .any(|vault| vault.name.to_lowercase() == name.to_lowercase())
+            {
+                return Err("A vault with that name already exists.".to_string());
+            }
+            let mut bytes = [0u8; 16];
+            getrandom::getrandom(&mut bytes).map_err(|_| "Could not create the vault".to_string())?;
+            let entry = VaultEntry {
+                id: bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
+                name: name.to_string(),
+                legacy: false,
+            };
+            let root = vault_root(&self.data_dir, &entry);
+
+            let prepared = prepare_vault(&root, &entry.id).and_then(|()| {
+                registry.vaults.push(entry.clone());
+                self.open_entry(database, registry, &entry)
+            });
+            if let Err(error) = prepared {
+                registry.vaults.retain(|vault| vault.id != entry.id);
+                let _ = write_registry(&self.data_dir, registry);
+                let _ = fs::remove_dir_all(&root);
+                return Err(error);
+            }
+            Ok(VaultSummary {
+                id: entry.id,
+                name: entry.name,
+            })
+        })
+    }
+}
+
+/// Creates the new vault's database and gives it the registry id, so the
+/// list and the vault's own backups agree on which vault it is.
+fn prepare_vault(root: &Path, id: &str) -> Result<(), String> {
+    let state = DatabaseState::new(root.join("kivo.db"), root.join("files"));
+    state.initialize()?;
+    let connection = state.require_connection()?;
+    connection
+        .as_ref()
+        .expect("checked above")
+        .execute("UPDATE vault_identity SET uid = ?1 WHERE id = 1", [id])
+        .map_err(|error| format!("Could not create the vault: {error}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -231,6 +294,19 @@ pub fn switch_vault(
     // The Password Manager key belongs to the vault being left.
     passwords.clear();
     vaults.switch(database.inner(), &id)
+}
+
+#[tauri::command]
+pub fn create_vault(
+    name: String,
+    vaults: State<'_, VaultsState>,
+    database: State<'_, DatabaseState>,
+    passwords: State<'_, crate::passwords::VaultKeyState>,
+) -> Result<VaultSummary, String> {
+    let created = vaults.create(database.inner(), &name)?;
+    // The Password Manager key belongs to the vault that was left.
+    passwords.clear();
+    Ok(created)
 }
 
 #[cfg(test)]
@@ -479,5 +555,80 @@ mod tests {
         let vaults = VaultsState::new(data.0.clone(), Some(registry), &data.0);
         let state = open(&data.0);
         assert_eq!(vaults.list(&state).expect("list").active_id, legacy);
+    }
+
+    fn count(state: &DatabaseState, table: &str) -> i64 {
+        let connection = state.require_connection().expect("connection");
+        connection
+            .as_ref()
+            .expect("open")
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+            .expect("count")
+    }
+
+    #[test]
+    fn new_vault_starts_empty_and_private_and_opens() {
+        let data = DataDir::new("create");
+        let (state, vaults) = two_vaults(&data);
+        let legacy = vaults.list(&state).expect("list").active_id;
+        let first = contents(&state);
+
+        let created = vaults.create(&state, "  Travel  ").expect("create");
+
+        assert_eq!(created.name, "Travel");
+        let list = vaults.list(&state).expect("list");
+        assert_eq!(list.active_id, created.id);
+        assert_eq!(list.vaults.len(), 3);
+        assert!(data.0.join(VAULTS_DIR).join(&created.id).join("kivo.db").is_file());
+        for table in ["items", "collections", "credentials", "vault_keys", "vault_key_slots", "profile"] {
+            assert_eq!(count(&state, table), 0, "{table} is empty");
+        }
+        assert!(matches!(boot(&state), BootState::Onboarding));
+        let connection = state.require_connection().expect("connection");
+        let uid: String = connection
+            .as_ref()
+            .expect("open")
+            .query_row("SELECT uid FROM vault_identity", [], |row| row.get(0))
+            .expect("uid");
+        drop(connection);
+        assert_eq!(uid, created.id, "database knows which vault it is");
+
+        // Setup gives it only the chosen collections and its own password.
+        {
+            let verifier = crate::security::hash_secret("travel-pass").expect("hash");
+            let mut connection = state.require_connection().expect("connection");
+            write_setup(
+                connection.as_mut().expect("open"),
+                &SetupInput {
+                    owner_name: "Ana".to_string(),
+                    vault_name: "Travel".to_string(),
+                    starter_collections: vec!["Images & Media".to_string()],
+                    password_verifier: Some(verifier),
+                },
+            )
+            .expect("setup");
+        }
+        assert_eq!(contents(&state), vec!["collection:Images & Media", "theme:dark"]);
+        assert!(matches!(boot(&state), BootState::Locked));
+
+        vaults.switch(&state, &legacy).expect("back to the first vault");
+        assert_eq!(contents(&state), first, "the first vault is unchanged");
+        assert!(matches!(boot(&state), BootState::Ready), "its password did not change");
+    }
+
+    #[test]
+    fn new_vault_needs_a_unique_name() {
+        let data = DataDir::new("create-name");
+        let (state, vaults) = two_vaults(&data);
+
+        assert_eq!(vaults.create(&state, "   ").expect_err("empty"), "Enter a name for the vault.");
+        assert_eq!(
+            vaults.create(&state, "home").expect_err("taken"),
+            "A vault with that name already exists."
+        );
+        assert_eq!(vaults.list(&state).expect("list").vaults.len(), 2);
+        assert!(!data.0.join(VAULTS_DIR).read_dir().expect("vaults dir").any(|entry| {
+            entry.expect("entry").file_name() != "second"
+        }));
     }
 }

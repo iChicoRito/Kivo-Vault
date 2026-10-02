@@ -17,3 +17,8 @@ export function listVaults() {
 export function switchVault(id: string) {
   return invoke<void>('switch_vault', { id })
 }
+
+/** Creates an empty vault and opens it in the backend. Setup follows with `completeSetup`. */
+export function createVault(name: string) {
+  return invoke<VaultSummary>('create_vault', { name })
+}

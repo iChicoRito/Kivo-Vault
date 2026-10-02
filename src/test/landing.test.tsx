@@ -17,7 +17,7 @@ describe('landing page', () => {
     const links = screen.getAllByRole('link', { name: /download/i })
     expect(links.length).toBeGreaterThan(0)
     for (const link of links) {
-      expect(link).toHaveAttribute('href', 'downloads/Kivo_0.4.0_x64-setup.exe')
+      expect(link).toHaveAttribute('href', 'downloads/Kivo_0.5.0_x64-setup.exe')
       expect(link).toHaveAttribute('download')
     }
   })

@@ -196,7 +196,7 @@ pub(crate) fn move_stray_files(
     Ok(moved)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn check_vault_health(
     state: State<'_, DatabaseState>,
     vault: State<'_, VaultKeyState>,
@@ -222,7 +222,7 @@ pub fn check_vault_health(
 
 /// Applies one repair to the chosen problems and returns how many were fixed.
 /// Stray files go to "Kivo Recovered Files" in Documents.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn repair_vault_health(
     kind: String,
     ids: Vec<String>,

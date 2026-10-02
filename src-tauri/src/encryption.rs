@@ -970,7 +970,7 @@ pub fn change_password(
     tx.commit().map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_protection_state(state: State<'_, DatabaseState>) -> Result<ProtectionState, String> {
     let guard = state.require_connection()?;
     let connection = guard.as_ref().expect("checked above");
@@ -981,7 +981,7 @@ pub fn read_protection_state(state: State<'_, DatabaseState>) -> Result<Protecti
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn unlock_content_vault(
     password: String,
     state: State<'_, DatabaseState>,
@@ -1019,7 +1019,7 @@ fn record_password_result<T>(state: &DatabaseState, result: &Result<T, String>) 
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lock_content_vault(state: State<'_, DatabaseState>) -> Result<(), String> {
     clear_temp_files();
     state.clear_unlocked_collections();
@@ -1027,7 +1027,7 @@ pub fn lock_content_vault(state: State<'_, DatabaseState>) -> Result<(), String>
     state.content_key().clear()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn enable_encryption(
     password: String,
     state: State<'_, DatabaseState>,
@@ -1054,7 +1054,7 @@ pub fn enable_encryption(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_encryption(
     password: String,
     state: State<'_, DatabaseState>,
@@ -1074,7 +1074,7 @@ pub fn disable_encryption(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn change_master_password(
     current: String,
     next: String,

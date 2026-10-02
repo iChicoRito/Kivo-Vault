@@ -998,7 +998,7 @@ fn write_document(
     fs::write(path, json).map_err(|error| format!("Could not write the export: {error}"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_save_file(default_name: String, app: AppHandle) -> Result<Option<String>, String> {
     Ok(app
         .dialog()
@@ -1008,7 +1008,7 @@ pub fn pick_save_file(default_name: String, app: AppHandle) -> Result<Option<Str
         .map(|path| path.to_string()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_folder_destination(app: AppHandle) -> Result<Option<String>, String> {
     Ok(app
         .dialog()
@@ -1017,7 +1017,7 @@ pub fn pick_folder_destination(app: AppHandle) -> Result<Option<String>, String>
         .map(|path| path.to_string()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_note_markdown(
     id: String,
     path: String,
@@ -1034,7 +1034,7 @@ pub fn export_note_markdown(
     fs::write(&path, text).map_err(|error| format!("Could not write the export: {error}"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_items_json(
     ids: Vec<String>,
     path: String,
@@ -1121,7 +1121,7 @@ pub(crate) fn export_vault_into(
 }
 
 /// Returns how many items were left out because their collection is locked.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_vault_json(path: String, state: State<'_, DatabaseState>) -> Result<usize, String> {
     let guard = state.require_connection()?;
     let connection = guard.as_ref().expect("checked above");
@@ -1135,7 +1135,7 @@ pub fn export_vault_json(path: String, state: State<'_, DatabaseState>) -> Resul
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_json(path: String, state: State<'_, DatabaseState>) -> Result<ImportReport, String> {
     let mut guard = state.require_connection()?;
     let connection = guard.as_mut().expect("checked above");
@@ -1149,7 +1149,7 @@ pub fn import_json(path: String, state: State<'_, DatabaseState>) -> Result<Impo
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_markdown(
     paths: Vec<String>,
     state: State<'_, DatabaseState>,

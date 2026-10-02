@@ -361,12 +361,12 @@ pub(crate) fn recover_with_state(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_recovery_status(scope: String, db: State<'_, DatabaseState>) -> Result<RecoveryStatus, String> {
     read_status_with_state(db.inner(), &scope)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn begin_recovery_setup(
     scope: String,
     password: String,
@@ -397,7 +397,7 @@ pub async fn save_recovery_kit(token: String, app: AppHandle) -> Result<bool, St
     Ok(true)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn confirm_recovery_setup(
     token: String,
     recovery_key: String,
@@ -406,17 +406,17 @@ pub fn confirm_recovery_setup(
     confirm_with_state(db.inner(), &token, &recovery_key)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cancel_recovery_setup(token: String, db: State<'_, DatabaseState>) -> Result<(), String> {
     cancel_with_state(db.inner(), &token)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_recovery(scope: String, password: String, db: State<'_, DatabaseState>) -> Result<(), String> {
     disable_with_state(db.inner(), &scope, &password)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn recover_vault(
     scope: String,
     recovery_key: String,

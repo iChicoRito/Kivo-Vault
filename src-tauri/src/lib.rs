@@ -18,7 +18,7 @@ mod vaults;
 
 /// Lives here because it touches both backup and the password vault, and the
 /// integration tests compile `backup.rs` without `passwords.rs`.
-#[tauri::command]
+#[tauri::command(async)]
 fn restore_backup(
     path: String,
     password: Option<String>,

@@ -276,7 +276,7 @@ fn prepare_vault(root: &Path, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_vaults(
     vaults: State<'_, VaultsState>,
     database: State<'_, DatabaseState>,
@@ -284,7 +284,7 @@ pub fn list_vaults(
     vaults.list(database.inner())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn switch_vault(
     id: String,
     vaults: State<'_, VaultsState>,
@@ -296,7 +296,7 @@ pub fn switch_vault(
     vaults.switch(database.inner(), &id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_vault(
     name: String,
     vaults: State<'_, VaultsState>,

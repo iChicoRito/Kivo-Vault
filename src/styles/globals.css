@@ -165,22 +165,6 @@
 }
 
 /*
- * Navbar fill. The navbar's progressive blur is blur only, so content scrolling
- * under it stays legible right through the band; a light /10 fill sits on the
- * header for a hint of scrim while the blur keeps fading above it. The band
- * shares the header's box, so the fill and the blur cover the same strip.
- */
-@layer utilities {
-  #kivo-navbar {
-    background-color: rgb(255 255 255 / 0.1);
-  }
-
-  #kivo-navbar:is(.dark, .dark *, [data-theme=dark], [data-theme=dark] *) {
-    background-color: rgb(0 0 0 / 0.1);
-  }
-}
-
-/*
  * Navbar chrome controls. HeroUI paints its accent focus ring on focus, which on
  * the bare navbar reads as a stray blue circle around the icon. The control marks
  * focus the way it marks hover instead: a soft surface plus a hairline, visible on

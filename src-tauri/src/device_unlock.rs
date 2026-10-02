@@ -547,7 +547,7 @@ pub async fn unlock_with_device(scope: String, window: tauri::Window, app: AppHa
     .await
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disable_device_unlock(scope: String, password: String, db: State<'_, DatabaseState>) -> Result<(), String> {
     disable_with(db.inner(), &scope, &password)
 }

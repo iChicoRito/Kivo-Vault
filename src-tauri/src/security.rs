@@ -23,7 +23,7 @@ pub(crate) fn secret_matches(secret: &str, verifier: &str) -> bool {
         .is_ok()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn hash_password(password: String) -> Result<String, String> {
     if password.trim().is_empty() {
         return Err("Password is required".to_string());
@@ -32,7 +32,7 @@ pub fn hash_password(password: String) -> Result<String, String> {
     hash_secret(&password)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn verify_password(password: String, verifier: String) -> Result<bool, String> {
     Ok(secret_matches(&password, &verifier))
 }

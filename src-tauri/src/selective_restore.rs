@@ -215,7 +215,7 @@ fn with_attempt<T>(state: &DatabaseState, result: impl FnOnce() -> Result<T, Str
     result
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_backup_contents(
     path: String,
     password: Option<String>,
@@ -227,7 +227,7 @@ pub fn list_backup_contents(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restore_from_backup(
     path: String,
     password: Option<String>,

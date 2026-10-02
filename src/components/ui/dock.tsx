@@ -75,7 +75,8 @@ const Dock = React.forwardRef<HTMLDivElement, DockProps>(
       >
         {/* The glass bar hugs the icons. Hovering widens the gaps between the
             icons; names show in tooltips, so the bar keeps its height. */}
-        <div className="absolute inset-x-0 bottom-0 h-[58px] rounded-2xl border backdrop-blur-md transition-all duration-300 ease-out group-hover:backdrop-blur-xl supports-backdrop-blur:bg-white/10 supports-backdrop-blur:dark:bg-black/10 supports-backdrop-blur:group-hover:bg-white/20 supports-backdrop-blur:dark:group-hover:bg-black/20 group-has-[:focus-visible]:backdrop-blur-xl supports-backdrop-blur:group-has-[:focus-visible]:bg-white/20 supports-backdrop-blur:dark:group-has-[:focus-visible]:bg-black/20" />
+        {/* One fixed blur; only the tint changes on hover, so the blur is never animated. */}
+        <div className="absolute inset-x-0 bottom-0 h-[58px] rounded-2xl border backdrop-blur-md transition-colors duration-300 ease-out supports-backdrop-blur:bg-white/10 supports-backdrop-blur:dark:bg-black/10 supports-backdrop-blur:group-hover:bg-white/20 supports-backdrop-blur:dark:group-hover:bg-black/20 supports-backdrop-blur:group-has-[:focus-visible]:bg-white/20 supports-backdrop-blur:dark:group-has-[:focus-visible]:bg-black/20" />
         <div
           className={cn(
             "relative flex justify-center gap-4 p-2 transition-[gap] duration-300 ease-out group-hover:gap-8",

@@ -1547,7 +1547,7 @@ fn delete_credentials_permanently_with_state(
     remove_credentials_permanently(connection.as_mut().expect("checked above"), ids)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn vault_status(
     db: State<'_, DatabaseState>,
     vault: State<'_, VaultKeyState>,
@@ -1555,7 +1555,7 @@ pub fn vault_status(
     vault_status_with_state(db.inner(), vault.inner())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn setup_vault(
     master_password: String,
     db: State<'_, DatabaseState>,
@@ -1564,7 +1564,7 @@ pub fn setup_vault(
     setup_vault_with_state(db.inner(), vault.inner(), &master_password)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn unlock_vault(
     master_password: String,
     db: State<'_, DatabaseState>,
@@ -1576,7 +1576,7 @@ pub fn unlock_vault(
     result
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn change_password_vault_password(
     current: String,
     next: String,
@@ -1591,7 +1591,7 @@ pub fn change_password_vault_password(
     result
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lock_vault(
     db: State<'_, DatabaseState>,
     vault: State<'_, VaultKeyState>,
@@ -1599,7 +1599,7 @@ pub fn lock_vault(
     lock_vault_with_state(db.inner(), vault.inner())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_credentials(
     filter: Option<CredentialFilter>,
     db: State<'_, DatabaseState>,
@@ -1608,7 +1608,7 @@ pub fn list_credentials(
     list_credentials_with_state(db.inner(), vault.inner(), filter.as_ref())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_credential(
     id: String,
     db: State<'_, DatabaseState>,
@@ -1617,7 +1617,7 @@ pub fn load_credential(
     load_credential_with_state(db.inner(), vault.inner(), &id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_credential(
     input: CredentialInput,
     db: State<'_, DatabaseState>,
@@ -1626,7 +1626,7 @@ pub fn save_credential(
     save_credential_with_state(db.inner(), vault.inner(), &input)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_credential_versions(
     id: String,
     db: State<'_, DatabaseState>,
@@ -1638,7 +1638,7 @@ pub fn list_credential_versions(
     read_credential_versions(connection.as_ref().expect("checked above"), &key, &id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restore_credential_version(
     version_id: String,
     db: State<'_, DatabaseState>,
@@ -1650,7 +1650,7 @@ pub fn restore_credential_version(
     restore_credential_version_in(connection.as_mut().expect("checked above"), &key, &version_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_password_csv(app: AppHandle) -> Result<Option<String>, String> {
     Ok(app
         .dialog()
@@ -1660,7 +1660,7 @@ pub fn pick_password_csv(app: AppHandle) -> Result<Option<String>, String> {
         .map(|path| path.to_string()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn preview_password_import(
     path: String,
     db: State<'_, DatabaseState>,
@@ -1680,7 +1680,7 @@ pub fn preview_password_import(
     preview_password_import_in(connection.as_ref().expect("checked above"), &key, &text)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_credentials(
     choices: Vec<ImportChoice>,
     db: State<'_, DatabaseState>,
@@ -1692,7 +1692,7 @@ pub fn import_credentials(
     Ok(import_credentials_in(connection.as_mut().expect("checked above"), &key, &choices))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_credentials_favorite(
     ids: Vec<String>,
     favorite: bool,
@@ -1702,7 +1702,7 @@ pub fn set_credentials_favorite(
     set_credentials_favorite_with_state(db.inner(), vault.inner(), &ids, favorite)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn trash_credentials(
     ids: Vec<String>,
     db: State<'_, DatabaseState>,
@@ -1711,7 +1711,7 @@ pub fn trash_credentials(
     trash_credentials_with_state(db.inner(), vault.inner(), &ids)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restore_credentials(
     ids: Vec<String>,
     db: State<'_, DatabaseState>,
@@ -1720,7 +1720,7 @@ pub fn restore_credentials(
     restore_credentials_with_state(db.inner(), vault.inner(), &ids)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_credentials_permanently(
     ids: Vec<String>,
     db: State<'_, DatabaseState>,
@@ -1776,7 +1776,7 @@ fn reset_with_state(
 }
 
 /// Tells the Danger zone whether to ask for a password before a reset.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reset_requires_password(db: State<'_, DatabaseState>) -> Result<bool, String> {
     let connection = db.require_connection()?;
     let connection = connection.as_ref().expect("checked above");
@@ -1789,7 +1789,7 @@ pub fn reset_requires_password(db: State<'_, DatabaseState>) -> Result<bool, Str
 
 /// Checks the reset password before the confirm step, so a wrong one never
 /// gets past the first screen. The reset itself checks it again.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn verify_reset_password(password: String, db: State<'_, DatabaseState>) -> Result<(), String> {
     db.check_attempt()?;
     let connection = db.require_connection()?;
@@ -1809,7 +1809,7 @@ fn record_secret_result<T>(db: &DatabaseState, result: &Result<T, String>, wrong
 
 // Wipes every note, source, file, password, and setting. The password vault key
 // is cleared too, so nothing unlocked survives the reset.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reset_vault(
     password: Option<String>,
     db: State<'_, DatabaseState>,
@@ -1826,7 +1826,7 @@ pub fn reset_vault(
 /// of Win+V history and clear it after a delay, but only if the clipboard still
 /// holds it, so anything the user copied since is kept. Done in Rust because
 /// the webview cannot write the clipboard while Kivo is unfocused.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn copy_secret(text: String, db: State<'_, DatabaseState>) -> Result<(), String> {
     let (clear_seconds, exclude_history) = {
         let connection = db.require_connection()?;

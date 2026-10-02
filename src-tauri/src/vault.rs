@@ -3197,7 +3197,7 @@ pub async fn commit_file_import(
     Ok(outcome)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cancel_file_import(token: String, state: State<'_, DatabaseState>) -> Result<(), String> {
     cancel_file_import_with_state(state.inner(), &token)
 }
@@ -3211,7 +3211,7 @@ pub async fn index_file(item_id: String, app: AppHandle) -> Result<IndexState, S
     }).await.map_err(|error| format!("Could not index PDF: {error}"))?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_item(input: ItemInput, state: State<'_, DatabaseState>) -> Result<CaptureOutcome, String> {
     capture_item_with_state(state.inner(), &input)
 }
@@ -3223,12 +3223,12 @@ fn emit_access_changed(app: &AppHandle, state: &DatabaseState) {
     );
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_item(id: String, state: State<'_, DatabaseState>) -> Result<Item, String> {
     load_item_with_state(state.inner(), &id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_items(
     filter: Option<ItemFilter>,
     state: State<'_, DatabaseState>,
@@ -3236,7 +3236,7 @@ pub fn list_items(
     list_items_with_state(state.inner(), filter.as_ref())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_item_tags(
     id: String,
     tags: Vec<String>,
@@ -3245,12 +3245,12 @@ pub fn set_item_tags(
     set_item_tags_with_state(state.inner(), &id, &tags)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_collections(state: State<'_, DatabaseState>) -> Result<Vec<Collection>, String> {
     list_collections_with_state(state.inner())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_item_versions(
     item_id: String,
     state: State<'_, DatabaseState>,
@@ -3258,7 +3258,7 @@ pub fn list_item_versions(
     list_item_versions_with_state(state.inner(), &item_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restore_item_version(
     version_id: String,
     state: State<'_, DatabaseState>,
@@ -3266,7 +3266,7 @@ pub fn restore_item_version(
     restore_item_version_with_state(state.inner(), &version_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_item_file(
     id: String,
     state: State<'_, DatabaseState>,
@@ -3274,17 +3274,17 @@ pub fn read_item_file(
     read_item_file_with_state(state.inner(), &id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_storage_report(state: State<'_, DatabaseState>) -> Result<StorageReport, String> {
     load_storage_report_with_state(state.inner())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_index_state(state: State<'_, DatabaseState>) -> Result<Vec<IndexState>, String> {
     list_index_state_with_state(state.inner())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_item_pinned(
     id: String,
     pinned: bool,
@@ -3293,7 +3293,7 @@ pub fn set_item_pinned(
     set_item_pinned_with_state(state.inner(), &id, pinned)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_items_favorite(
     ids: Vec<String>,
     favorite: bool,
@@ -3302,7 +3302,7 @@ pub fn set_items_favorite(
     set_items_favorite_with_state(state.inner(), &ids, favorite)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn move_items_to_collection(
     ids: Vec<String>,
     collection_id: Option<String>,
@@ -3311,17 +3311,17 @@ pub fn move_items_to_collection(
     move_items_to_collection_with_state(state.inner(), &ids, collection_id.as_deref())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn trash_items(ids: Vec<String>, state: State<'_, DatabaseState>) -> Result<(), String> {
     trash_items_with_state(state.inner(), &ids)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restore_items(ids: Vec<String>, state: State<'_, DatabaseState>) -> Result<(), String> {
     restore_items_with_state(state.inner(), &ids)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_items_permanently(
     ids: Vec<String>,
     state: State<'_, DatabaseState>,
@@ -3329,12 +3329,12 @@ pub fn delete_items_permanently(
     delete_items_permanently_with_state(state.inner(), &ids)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_vault_summary(state: State<'_, DatabaseState>) -> Result<VaultSummary, String> {
     load_vault_summary_with_state(state.inner())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_collection(
     input: CollectionInput,
     state: State<'_, DatabaseState>,
@@ -3342,19 +3342,19 @@ pub fn save_collection(
     save_collection_with_state(state.inner(), &input)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_collection(id: String, state: State<'_, DatabaseState>) -> Result<(), String> {
     delete_collection_with_state(state.inner(), &id)
 }
 
 /// Closes a collection that was opened with its secret this session.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lock_collection(id: String, app: AppHandle, state: State<'_, DatabaseState>) {
     state.lock_collection(&id);
     emit_access_changed(&app, state.inner());
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn verify_collection_secret(
     id: String,
     secret: String,
@@ -3370,12 +3370,12 @@ pub fn verify_collection_secret(
     Ok(matched)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_tags(state: State<'_, DatabaseState>) -> Result<Vec<Tag>, String> {
     list_tags_with_state(state.inner())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_file(app: AppHandle) -> Result<Option<String>, String> {
     Ok(app
         .dialog()
@@ -3384,7 +3384,7 @@ pub fn pick_file(app: AppHandle) -> Result<Option<String>, String> {
         .map(|path| path.to_string()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_files(app: AppHandle) -> Result<Option<Vec<String>>, String> {
     Ok(app
         .dialog()
@@ -3393,7 +3393,7 @@ pub fn pick_files(app: AppHandle) -> Result<Option<Vec<String>>, String> {
         .map(|paths| paths.into_iter().map(|path| path.to_string()).collect()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_item_file(
     id: String,
     app: AppHandle,
@@ -3414,7 +3414,7 @@ pub fn open_item_file(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reveal_item_file(
     id: String,
     app: AppHandle,
@@ -3427,7 +3427,7 @@ pub fn reveal_item_file(
         .map_err(|error| format!("Could not reveal the file: {error}"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_source_url(
     id: String,
     app: AppHandle,

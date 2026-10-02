@@ -1109,7 +1109,7 @@ fn backup_for_lock(
     create_sealed_backup_in(connection, &state.files_dir(), parent, password)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_backup_destination(app: AppHandle) -> Result<Option<String>, String> {
     Ok(app
         .dialog()
@@ -1118,7 +1118,7 @@ pub fn pick_backup_destination(app: AppHandle) -> Result<Option<String>, String>
         .map(|path| path.to_string()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pick_backup_source(app: AppHandle) -> Result<Option<String>, String> {
     Ok(app
         .dialog()
@@ -1127,7 +1127,7 @@ pub fn pick_backup_source(app: AppHandle) -> Result<Option<String>, String> {
         .map(|path| path.to_string()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_backup(
     destination: String,
     replace: bool,
@@ -1148,7 +1148,7 @@ pub fn create_backup(
 }
 
 /// One-click backup. With no folder it goes to "Kivo Backups" in Documents.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_backup_now(
     folder: Option<String>,
     password: Option<String>,
@@ -1168,7 +1168,7 @@ pub fn create_backup_now(
     backup_for_lock(state.inner(), &parent, password.as_deref())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn inspect_backup(path: String) -> Result<BackupInfo, String> {
     Ok(inspect_backup_at(Path::new(&path)))
 }

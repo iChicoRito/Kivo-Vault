@@ -856,7 +856,7 @@ pub(crate) fn summarize_item_with_state(
     Ok(summarize_note(&item.kind, &item.content))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_related_items(
     input: RelatedSearchInput,
     state: State<'_, DatabaseState>,
@@ -864,12 +864,12 @@ pub fn search_related_items(
     search_related_items_with_state(state.inner(), &input)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reindex_items(state: State<'_, DatabaseState>) -> Result<ReindexReport, String> {
     reindex_items_with_state(state.inner())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn suggest_tags(
     item_id: String,
     state: State<'_, DatabaseState>,
@@ -877,7 +877,7 @@ pub fn suggest_tags(
     suggest_tags_with_state(state.inner(), &item_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn summarize_item(
     item_id: String,
     state: State<'_, DatabaseState>,

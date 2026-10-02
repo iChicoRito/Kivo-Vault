@@ -1052,37 +1052,37 @@ pub fn read_password_verifier(connection: &Connection) -> rusqlite::Result<Optio
         .map(Option::flatten)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn initialize_database(state: State<'_, DatabaseState>) -> Result<(), String> {
     state.initialize()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_boot_state(state: State<'_, DatabaseState>) -> Result<BootState, String> {
     state.boot_state()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn complete_setup(input: SetupInput, state: State<'_, DatabaseState>) -> Result<(), String> {
     state.complete_setup(input)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_profile(state: State<'_, DatabaseState>) -> Result<Profile, String> {
     state.read_profile()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_profile(profile: ProfileInput, state: State<'_, DatabaseState>) -> Result<(), String> {
     state.save_profile(&profile)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_preferences(state: State<'_, DatabaseState>) -> Result<Preferences, String> {
     state.read_preferences()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_preferences(
     preferences: Preferences,
     state: State<'_, DatabaseState>,
@@ -1090,7 +1090,7 @@ pub fn save_preferences(
     state.save_preferences(&preferences)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_password_verifier(
     verifier: String,
     state: State<'_, DatabaseState>,
@@ -1098,19 +1098,19 @@ pub fn set_password_verifier(
     state.set_password_verifier(&verifier)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remove_password_verifier(state: State<'_, DatabaseState>) -> Result<(), String> {
     state.remove_password_verifier()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_password_verifier(state: State<'_, DatabaseState>) -> Result<Option<String>, String> {
     state.password_verifier()
 }
 
 // The settings UI asks this instead of treating any stored value as a lock, so a
 // corrupted or foreign verifier cannot show controls that can never succeed.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn has_password_verifier(state: State<'_, DatabaseState>) -> Result<bool, String> {
     state.has_password_verifier()
 }

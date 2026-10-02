@@ -4,7 +4,6 @@ import { buttonVariants, ScrollShadow } from '@heroui/react'
 import { Outlet } from 'react-router-dom'
 import { useNavigate, useLocation } from 'react-router-dom'
 
-import { GradualBlur } from '../components/ui/GradualBlur'
 import { AnimatedThemeToggler } from '../components/ui/animated-theme-toggler'
 import { notifyError } from '../lib/feedback'
 import { cn } from '../lib/utils'
@@ -14,7 +13,6 @@ import AppSidebar from './AppSidebar'
 import NavbarSearch from './NavbarSearch'
 import { CommandPalette } from './CommandPalette'
 import { shortcuts, matchesShortcut } from './shortcuts'
-import DotField from '../components/ui/DotField'
 import { QuickAddDialog } from '../features/quick-add/QuickAddDialog'
 import { ShortcutsDialog } from '../features/shortcuts/ShortcutsDialog'
 import GuidedTour from '../features/tour/GuidedTour'
@@ -81,19 +79,10 @@ function AppNavbar({ hidden, showVaults }: { hidden: boolean; showVaults: boolea
     <header
       id="kivo-navbar"
       data-hidden={hidden ? 'true' : undefined}
-      className="sticky top-0 z-20 flex min-h-14 items-center justify-between gap-3 pt-4 pb-4"
+      // A plain fade into the page instead of stacked backdrop blurs, which
+      // had to be repainted on every scroll frame.
+      className="sticky top-0 z-20 flex min-h-14 items-center justify-between gap-3 bg-linear-to-b from-background from-60% to-transparent pt-4 pb-4"
     >
-      {/* Progressive blur over the scrolling content. It sits behind the
-          navbar's own controls (zIndex -1) so the field and toggle stay crisp. */}
-      <GradualBlur
-        curve="bezier"
-        divCount={6}
-        exponential
-        height="100%"
-        position="top"
-        strength={2.5}
-        zIndex={-1}
-      />
       <NavbarSearch />
       <div className="flex items-center gap-2">
         {/* The sidebar has its own switcher; the dock has no room for one. */}
@@ -101,38 +90,6 @@ function AppNavbar({ hidden, showVaults }: { hidden: boolean; showVaults: boolea
         <ThemeToggle />
       </div>
     </header>
-  )
-}
-
-// Canvas cannot read CSS variables, so the muted text color is resolved from the theme.
-function readMuted() {
-  return getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#71717a'
-}
-
-/** Faint dot field behind every page. Opacity is the one knob for how visible it is. */
-function AppBackground() {
-  const [color, setColor] = useState(readMuted)
-
-  // Theme switches flip a class or data attribute on <html>; re-read the color then.
-  useEffect(() => {
-    const observer = new MutationObserver(() => setColor(readMuted()))
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] })
-    return () => observer.disconnect()
-  }, [])
-
-  return (
-    <div aria-hidden="true" className="pointer-events-none fixed inset-0 -z-10 opacity-25">
-      <DotField
-        bulgeStrength={67}
-        dotRadius={1.5}
-        dotSpacing={14}
-        glowRadius={0}
-        gradientFrom={color}
-        gradientTo={color}
-        sparkle={false}
-        waveAmplitude={0}
-      />
-    </div>
   )
 }
 
@@ -180,7 +137,6 @@ export default function AppShell({ startTour = false }: { startTour?: boolean })
       data-navigation={navigationStyle}
       id="kivo-shell"
     >
-      <AppBackground />
       {navigationStyle === 'sidebar' ? <AppSidebar /> : null}
       <div id="kivo-workspace" className="min-w-0">
         <ScrollShadow

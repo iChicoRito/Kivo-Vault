@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Button, Card, Chip, Input, Label, Modal, Skeleton, TextField, Typography } from '@heroui/react'
 import {
   InformationCircleIcon,
@@ -15,6 +15,7 @@ import {
   type ProtectionState,
 } from '../../data/protection'
 import { notifyError, notifySuccess } from '../../lib/feedback'
+import { useSecurityChanged } from '../../lib/useVaultChanged'
 
 const PROTECTED = [
   'Note text, titles and tags',
@@ -65,11 +66,20 @@ export default function EncryptionSettings() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
+  const load = useCallback(() => {
     void readProtectionState()
-      .then(setState)
+      .then((next) => {
+        setState(next)
+        setLoadError(false)
+      })
       .catch(() => setLoadError(true))
   }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+  // Encryption needs a Master Password; follow it when it is set or removed.
+  useSecurityChanged(load)
 
   const on = state?.encryptionEnabled ?? false
 

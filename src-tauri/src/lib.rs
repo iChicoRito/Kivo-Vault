@@ -25,6 +25,7 @@ fn restore_backup(
     recovery_key: Option<String>,
     state: tauri::State<'_, database::DatabaseState>,
     vault: tauri::State<'_, passwords::VaultKeyState>,
+    vaults: tauri::State<'_, vaults::VaultsState>,
 ) -> Result<backup::RestoreSummary, String> {
     // The restored database has its own vault keys, so the old key must not stay loaded.
     vault.clear();
@@ -34,7 +35,9 @@ fn restore_backup(
         (None, Some(password)) => Some(backup::BackupUnlock::Password(password)),
         (None, None) => None,
     };
-    let result = backup::restore_with_unlock(state.inner(), std::path::Path::new(&path), unlock.as_ref());
+    let original = vaults.open_is_original();
+    let result =
+        backup::restore_with_unlock(state.inner(), std::path::Path::new(&path), unlock.as_ref(), original);
     let wrong = matches!(&result, Err(error) if error.starts_with("That Master Password") || error.starts_with("That recovery key"));
     if wrong || result.is_ok() {
         state.record_attempt(!wrong);

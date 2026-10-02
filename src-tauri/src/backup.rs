@@ -640,17 +640,67 @@ pub fn restore_backup_at(
     result
 }
 
+pub(crate) const OTHER_VAULT_BACKUP: &str =
+    "This backup belongs to another vault. Open that vault to restore it.";
+pub(crate) const OLD_BACKUP_FIRST_VAULT: &str =
+    "This backup was made before Kivo had several vaults. Restore it into your first vault.";
+
+/// The vault id a backup's database carries. `None` for backups made before
+/// vault ids (schema below 21). Read before any migration touches a copy.
+pub(crate) fn backup_vault_uid(database: &Path) -> Result<Option<String>, String> {
+    let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("Could not read the backup: {error}"))?;
+    let has_identity: bool = connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vault_identity')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not read the backup: {error}"))?;
+    if !has_identity {
+        return Ok(None);
+    }
+    crate::database::read_vault_uid(&connection).map(Some)
+}
+
+/// A backup belongs to the vault it came from and restores only into it.
+/// Backups older than vault ids can only come from the first (original)
+/// vault, so only that vault accepts them.
+pub(crate) fn check_backup_vault(backup_uid: Option<&str>, live_uid: &str, original: bool) -> Result<(), String> {
+    match backup_uid {
+        Some(uid) if uid == live_uid => Ok(()),
+        Some(_) => Err(OTHER_VAULT_BACKUP.into()),
+        None if original => Ok(()),
+        None => Err(OLD_BACKUP_FIRST_VAULT.into()),
+    }
+}
+
 /// Clears the content key, closes the live connection, restores, then reopens.
 /// The connection is reopened even when the restore fails so the app is never
-/// left without a database.
-pub(crate) fn restore_into(state: &DatabaseState, path: &Path) -> Result<RestoreSummary, String> {
+/// left without a database. `original` says the open vault is the first vault,
+/// the only one that accepts backups made before vault ids.
+pub(crate) fn restore_into(state: &DatabaseState, path: &Path, original: bool) -> Result<RestoreSummary, String> {
+    let live_uid = {
+        let guard = state.require_connection()?;
+        crate::database::read_vault_uid(guard.as_ref().expect("checked above"))?
+    };
+    check_backup_vault(backup_vault_uid(&path.join(DATABASE))?.as_deref(), &live_uid, original)?;
     let _ = state.content_key().clear();
     // A restored vault has other keys; any Windows Hello setup is set up again.
     state.revoke_device_unlock("content");
     state.revoke_device_unlock("passwords");
     state.close_connection()?;
     let result = restore_backup_at(path, &state.database_path(), &state.files_dir());
-    let reopened = state.reopen_connection();
+    // An old backup gets a fresh id while it is migrated; keep this vault's.
+    let reopened = state.reopen_connection().and_then(|()| {
+        let guard = state.require_connection()?;
+        guard
+            .as_ref()
+            .expect("checked above")
+            .execute("UPDATE vault_identity SET uid = ?1 WHERE id = 1", [&live_uid])
+            .map(|_| ())
+            .map_err(|error| format!("Could not keep the vault identity: {error}"))
+    });
     match (result, reopened) {
         (Ok(summary), Ok(())) => Ok(summary),
         (Ok(_), Err(error)) => Err(format!(
@@ -1073,13 +1123,14 @@ pub(crate) fn restore_with_unlock(
     state: &DatabaseState,
     path: &Path,
     unlock: Option<&BackupUnlock<'_>>,
+    original: bool,
 ) -> Result<RestoreSummary, String> {
     if !path.join(SEALED_HEADER).exists() {
-        return restore_into(state, path);
+        return restore_into(state, path, original);
     }
     let unlock = unlock.ok_or("Enter the Master Password this backup was made with.")?;
     let (opened, _content_key) = open_sealed_backup_with(path, unlock)?;
-    let result = restore_into(state, &opened);
+    let result = restore_into(state, &opened, original);
     let _ = fs::remove_dir_all(&opened);
     result
 }
@@ -1159,16 +1210,56 @@ pub fn create_backup_now(
 
     let parent = match folder {
         Some(folder) => PathBuf::from(folder),
-        None => app
-            .path()
-            .document_dir()
-            .map_err(|e| format!("Could not find the Documents folder: {e}"))?
-            .join("Kivo Backups"),
+        None => {
+            let base = app
+                .path()
+                .document_dir()
+                .map_err(|e| format!("Could not find the Documents folder: {e}"))?
+                .join("Kivo Backups");
+            // Each vault's backups sit in a folder named after it.
+            let name = {
+                let guard = state.require_connection()?;
+                crate::database::read_profile(guard.as_ref().expect("checked above"))
+                    .map(|profile| profile.vault_name)
+                    .unwrap_or_default()
+            };
+            match vault_folder_name(&name) {
+                Some(folder) => base.join(folder),
+                None => base,
+            }
+        }
     };
     backup_for_lock(state.inner(), &parent, password.as_deref())
+}
+
+/// A vault name made safe as one Windows folder name: characters Windows
+/// refuses become `-`, and trailing dots and spaces are dropped.
+fn vault_folder_name(name: &str) -> Option<String> {
+    let cleaned: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '-' } else { c })
+        .collect();
+    let cleaned = cleaned.trim_end_matches(['.', ' ']).trim().to_string();
+    (!cleaned.is_empty() && cleaned != "-").then_some(cleaned)
 }
 
 #[tauri::command(async)]
 pub fn inspect_backup(path: String) -> Result<BackupInfo, String> {
     Ok(inspect_backup_at(Path::new(&path)))
+}
+
+#[cfg(test)]
+mod vault_folder_tests {
+    use super::vault_folder_name;
+
+    #[test]
+    fn backup_folders_are_named_after_the_vault_safely() {
+        assert_eq!(vault_folder_name("  Work  ").as_deref(), Some("Work"));
+        assert_eq!(vault_folder_name("Ana's Vault").as_deref(), Some("Ana's Vault"));
+        assert_eq!(vault_folder_name("Q1/Q2: plans?").as_deref(), Some("Q1-Q2- plans-"));
+        assert_eq!(vault_folder_name(r"..\secret.").as_deref(), Some("..-secret"));
+        assert_eq!(vault_folder_name("   "), None);
+        assert_eq!(vault_folder_name("/"), None);
+    }
 }

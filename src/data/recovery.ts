@@ -1,3 +1,4 @@
+import { notifySecurityChanged } from './events'
 import { invoke } from './runtime'
 
 /** `content` is notes, sources and files; `passwords` is the password vault. */
@@ -25,8 +26,11 @@ export const cancelRecoverySetup = async (token: string) => invoke<void>('cancel
 export const disableRecovery = async (scope: VaultScope, password: string) =>
   invoke<void>('disable_recovery', { scope, password })
 
-export const recoverVault = async (scope: VaultScope, recoveryKey: string, newPassword: string) =>
-  invoke<void>('recover_vault', { scope, recoveryKey, newPassword })
+export const recoverVault = async (scope: VaultScope, recoveryKey: string, newPassword: string) => {
+  await invoke<void>('recover_vault', { scope, recoveryKey, newPassword })
+  // A new password turns off Windows Hello for that vault.
+  notifySecurityChanged()
+}
 
 export function errorText(error: unknown, fallback: string): string {
   const text = typeof error === 'string' ? error : error instanceof Error ? error.message : ''

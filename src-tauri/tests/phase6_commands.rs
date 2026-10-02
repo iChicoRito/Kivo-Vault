@@ -291,7 +291,17 @@ fn restore_clears_the_content_key_and_reopens_the_connection() {
         .unwrap();
     assert!(state.content_key().require_key().is_ok());
 
-    let summary = backup::restore_into(&state, &backup_path).unwrap();
+    // The fresh database stands for the same vault the backup came from.
+    let uid = backup::backup_vault_uid(&backup_path.join("kivo.db")).unwrap().unwrap();
+    {
+        let guard = state.require_connection().unwrap();
+        guard
+            .as_ref()
+            .unwrap()
+            .execute("UPDATE vault_identity SET uid = ?1 WHERE id = 1", [uid])
+            .unwrap();
+    }
+    let summary = backup::restore_into(&state, &backup_path, false).unwrap();
     assert_eq!(summary.item_count, 1);
     assert!(
         state.content_key().require_key().is_err(),

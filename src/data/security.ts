@@ -1,3 +1,4 @@
+import { notifySecurityChanged } from './events'
 import { invoke } from './runtime'
 
 export async function hashPassword(password: string): Promise<string> {
@@ -44,6 +45,7 @@ export async function setAppLock(password: string): Promise<void> {
   } catch {
     throw new Error('Could not turn on app lock.')
   }
+  notifySecurityChanged()
 }
 
 export async function removeAppLock(): Promise<void> {
@@ -52,4 +54,5 @@ export async function removeAppLock(): Promise<void> {
   } catch {
     throw new Error('Could not turn off app lock.')
   }
+  notifySecurityChanged()
 }

@@ -14,6 +14,18 @@ export function notifyVaultChanged(): void {
   window.dispatchEvent(new Event(VAULT_CHANGED_EVENT))
 }
 
+/** Window event that fires after the Master Password, app lock or encryption changes. */
+export const SECURITY_CHANGED_EVENT = 'kivo:security-changed'
+
+/**
+ * Tells the security settings cards to read their status again. Windows Hello,
+ * recovery kits and encryption depend on the Master Password, so setting or
+ * removing it must update them without reopening the page.
+ */
+export function notifySecurityChanged(): void {
+  window.dispatchEvent(new Event(SECURITY_CHANGED_EVENT))
+}
+
 export type CollectionAccessChange = { accessEpoch: number }
 
 /**

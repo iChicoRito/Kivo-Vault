@@ -72,7 +72,7 @@ export default function BackupSettings() {
         <div className="grid gap-4">
           <Row
             title="Back up"
-            hint={`Saves notes, files, passwords and settings to Documents › Kivo Backups. ${lockEnabled
+            hint={`Saves this vault's notes, files, passwords and settings to Documents › Kivo Backups, in a folder named after the vault. ${lockEnabled
               ? 'Backups are encrypted with your Master Password; you will need it to restore.'
               : 'Backups are not encrypted. Set a Master Password to encrypt them.'}`}
           >

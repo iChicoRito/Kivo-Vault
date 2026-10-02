@@ -670,6 +670,33 @@ mod tests {
     }
 
     #[test]
+    fn t25_windows_hello_and_recovery_kits_stay_with_their_own_vault() {
+        let (_first_temp, db, vault, _key) = vaults("t25-first", true);
+        let (second_temp, second_db, _second_vault, _second_key) = vaults("t25-second", true);
+        drop(second_db);
+        enroll_with(&db, &vault, &Fake::verified(), "content", CONTENT_PW, 0).unwrap();
+        let draft = crate::recovery::begin_with_state(&db, "content", CONTENT_PW).unwrap();
+        crate::recovery::confirm_with_state(&db, &draft.token, &draft.recovery_key).unwrap();
+        let first_enrollment = fs::read(enrollment_path(&db, VaultScope::Content)).unwrap();
+
+        // Switch the one app state to the other vault, as the vault switcher does.
+        db.open_root(&second_temp.0).unwrap();
+
+        assert!(!enrolled(&db, "content"), "Windows Hello is set up per vault");
+        assert!(unlock_with(&db, &vault, &Fake::verified(), "content", 0).is_err());
+        // Even a copied enrollment file does not open the other vault.
+        fs::create_dir_all(db.device_dir()).unwrap();
+        fs::write(enrollment_path(&db, VaultScope::Content), &first_enrollment).unwrap();
+        assert!(unlock_with(&db, &vault, &Fake::verified(), "content", 0).is_err());
+        assert!(db.content_key().require_key().is_err());
+
+        // The first vault's recovery kit cannot reset the second vault's password.
+        assert!(crate::recovery::recover_with_state(&db, &vault, "content", &draft.recovery_key, "taken over").is_err());
+        let mut guard = db.require_connection().unwrap();
+        assert!(crate::recovery::authenticate(guard.as_mut().unwrap(), VaultScope::Content, CONTENT_PW).is_ok());
+    }
+
+    #[test]
     fn a_verified_prompt_unlocks_each_vault_and_cancel_keeps_it_locked() {
         let (_temp, db, vault, key) = vaults("unlock", true);
         enroll_with(&db, &vault, &Fake::verified(), "content", CONTENT_PW, 0).unwrap();

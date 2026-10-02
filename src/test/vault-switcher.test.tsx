@@ -123,16 +123,18 @@ describe('switching from the lock screen', () => {
     }
 
     render(<App />)
+    // The whole app boots twice here; give it room when the full suite runs in parallel.
+    const slow = { timeout: 10_000 }
 
-    expect(await screen.findByRole('heading', { name: 'Unlock your vault' })).toBeInTheDocument()
-    fireEvent.click(await screen.findByRole('button', { name: 'Vault: Work. Switch vault' }))
-    fireEvent.click(await screen.findByRole('menuitemradio', { name: 'Home' }))
+    expect(await screen.findByRole('heading', { name: 'Unlock your vault' }, slow)).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: 'Vault: Work. Switch vault' }, slow))
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: 'Home' }, slow))
 
-    expect(await screen.findByRole('button', { name: 'Vault: Home. Switch vault' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Vault: Home. Switch vault' }, slow)).toBeInTheDocument()
     expect(invoke).toHaveBeenCalledWith('switch_vault', { id: 'home' })
     // The boot flow ran again for the new vault, from the database check on.
     expect(invoke.mock.calls.filter(([command]) => command === 'initialize_database')).toHaveLength(2)
     expect(invoke.mock.calls.filter(([command]) => command === 'load_boot_state')).toHaveLength(2)
     expect(screen.getByRole('heading', { name: 'Unlock your vault' })).toBeInTheDocument()
-  })
+  }, 30_000)
 })

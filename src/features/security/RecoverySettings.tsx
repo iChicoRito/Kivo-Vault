@@ -3,6 +3,7 @@ import { Button, Card, Separator, Typography } from '@heroui/react'
 
 import { readRecoveryStatus, type RecoveryStatus, type VaultScope } from '../../data/recovery'
 import { RecoveryDialog, type RecoveryMode } from './RecoveryDialog'
+import { useSecurityChanged } from '../../lib/useVaultChanged'
 
 const ROWS: Array<{ scope: VaultScope; title: string; detail: string; unavailable: string }> = [
   {
@@ -36,6 +37,8 @@ export default function RecoverySettings() {
   useEffect(() => {
     load()
   }, [load])
+  // Setting or removing the Master Password changes what can be offered here.
+  useSecurityChanged(load)
 
   return (
     <Card aria-labelledby="recovery-title">

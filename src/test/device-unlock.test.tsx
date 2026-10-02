@@ -9,6 +9,7 @@ vi.mock('../lib/feedback', () => ({ notifySuccess: vi.fn(), notifyError: vi.fn()
 
 import DeviceUnlockSettings from '../features/security/DeviceUnlockSettings'
 import UnlockPage from '../features/security/UnlockPage'
+import { setAppLock } from '../data/security'
 
 type Handler = (args: Record<string, unknown>) => unknown
 
@@ -40,6 +41,30 @@ describe('Windows Hello settings', () => {
     expect(await screen.findAllByText(/Set up Windows Hello \(face, fingerprint or PIN\)/)).toHaveLength(2)
     expect(screen.queryByRole('button', { name: 'Turn on' })).not.toBeInTheDocument()
     expect(screen.getByText(/programs running as you/)).toBeInTheDocument()
+  })
+
+  it('offers Turn on as soon as a Master Password is added, without reopening Settings', async () => {
+    let hasPassword = false
+    backend({
+      read_device_unlock_status: ({ scope }) => ({
+        scope,
+        available: hasPassword,
+        enrolled: false,
+        unavailableReason: hasPassword ? null : 'Set a Master Password in App lock first.',
+      }),
+      hash_password: () => 'verifier',
+      set_password_verifier: () => {
+        hasPassword = true
+      },
+    })
+    render(<DeviceUnlockSettings />)
+    await screen.findAllByText('Set a Master Password in App lock first.')
+    expect(screen.queryByRole('button', { name: 'Turn on' })).not.toBeInTheDocument()
+
+    // What the App lock card calls when the password is saved.
+    await setAppLock('new master password')
+
+    expect(await screen.findAllByRole('button', { name: 'Turn on' })).toHaveLength(2)
   })
 
   it('turns on after the password and the Windows Hello prompt, and reports a cancelled prompt', async () => {

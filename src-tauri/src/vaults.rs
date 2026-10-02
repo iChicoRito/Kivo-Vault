@@ -97,12 +97,6 @@ pub fn startup_root(data_dir: &Path, registry: Option<&Registry>) -> PathBuf {
         .unwrap_or_else(|| data_dir.to_path_buf())
 }
 
-fn read_uid(connection: &Connection) -> Result<String, String> {
-    connection
-        .query_row("SELECT uid FROM vault_identity WHERE id = 1", [], |row| row.get(0))
-        .map_err(|error| format!("Could not read the vault identity: {error}"))
-}
-
 /// The vault name saved in the profile, if setup has finished.
 fn read_name(connection: &Connection) -> Option<String> {
     crate::database::read_profile(connection)
@@ -145,9 +139,9 @@ impl VaultsState {
             let connection = database.require_connection()?;
             let connection = connection.as_ref().expect("checked above");
             let registry = Registry {
-                active_id: read_uid(connection)?,
+                active_id: crate::database::read_vault_uid(connection)?,
                 vaults: vec![VaultEntry {
-                    id: read_uid(connection)?,
+                    id: crate::database::read_vault_uid(connection)?,
                     name: read_name(connection).unwrap_or_else(|| DEFAULT_NAME.to_string()),
                     legacy: true,
                 }],
@@ -156,6 +150,20 @@ impl VaultsState {
             *stored = Some(registry);
         }
         action(stored.as_mut().expect("set above"))
+    }
+
+    /// True when the open vault is the first (pre multi-vault) one. Before the
+    /// list exists, that is the only vault there is.
+    pub fn open_is_original(&self) -> bool {
+        self.registry
+            .lock()
+            .ok()
+            .and_then(|stored| {
+                stored
+                    .as_ref()
+                    .map(|registry| registry.entry(&registry.active_id).is_some_and(|entry| entry.legacy))
+            })
+            .unwrap_or(true)
     }
 
     pub fn list(&self, database: &DatabaseState) -> Result<VaultList, String> {
@@ -792,5 +800,86 @@ mod tests {
         let registry = read_registry(&data.0).expect("registry");
         assert_eq!(registry.vaults.len(), 1);
         assert_eq!(startup_root(&data.0, Some(&registry)), data.0.join(VAULTS_DIR).join("second"));
+    }
+
+    fn back_up(state: &DatabaseState, parent: &Path) -> PathBuf {
+        let connection = state.require_connection().expect("connection");
+        let info = crate::backup::create_backup_in(connection.as_ref().expect("open"), &state.files_dir(), parent)
+            .expect("backup");
+        PathBuf::from(info.path)
+    }
+
+    fn uid(state: &DatabaseState) -> String {
+        let connection = state.require_connection().expect("connection");
+        crate::database::read_vault_uid(connection.as_ref().expect("open")).expect("uid")
+    }
+
+    #[test]
+    fn a_backup_restores_only_into_the_vault_it_came_from() {
+        let data = DataDir::new("backup-owner");
+        let backups = DataDir::new("backup-owner-out");
+        let (state, vaults) = two_vaults(&data);
+        let legacy = vaults.list(&state).expect("list").active_id;
+        let first = contents(&state);
+        let backup = back_up(&state, &backups.0);
+
+        vaults.switch(&state, "second").expect("open second");
+        let second = contents(&state);
+        assert_eq!(
+            crate::backup::restore_into(&state, &backup, false).expect_err("other vault"),
+            crate::backup::OTHER_VAULT_BACKUP
+        );
+        assert_eq!(
+            crate::selective_restore::list_backup_items(&backup, None, None, Some((&state, false)))
+                .expect_err("other vault"),
+            crate::backup::OTHER_VAULT_BACKUP
+        );
+        assert_eq!(
+            crate::selective_restore::restore_backup_items(&state, &backup, None, None, &["alpha-item".into()], false)
+                .expect_err("other vault"),
+            crate::backup::OTHER_VAULT_BACKUP
+        );
+        assert_eq!(contents(&state), second, "the second vault is unchanged");
+
+        vaults.switch(&state, &legacy).expect("back to the first vault");
+        let before = uid(&state);
+        let summary = crate::backup::restore_into(&state, &backup, true).expect("same vault");
+        assert_eq!(summary.item_count, 1);
+        assert_eq!(contents(&state), first);
+        assert_eq!(uid(&state), before);
+    }
+
+    #[test]
+    fn a_backup_from_before_vault_ids_restores_only_into_the_first_vault() {
+        let data = DataDir::new("backup-old");
+        let backups = DataDir::new("backup-old-out");
+        let (state, vaults) = two_vaults(&data);
+        let legacy = vaults.list(&state).expect("list").active_id;
+        // A database as it was before migration 21.
+        let old = open(&data.0.join("old"));
+        setup(&old, "Work", "Projects");
+        add_records(&old, "gamma", "light");
+        {
+            let connection = old.require_connection().expect("connection");
+            connection
+                .as_ref()
+                .expect("open")
+                .execute_batch("DROP TABLE vault_identity; PRAGMA user_version = 20;")
+                .expect("older schema");
+        }
+        let backup = back_up(&old, &backups.0);
+        drop(old);
+        assert_eq!(crate::backup::backup_vault_uid(&backup.join("kivo.db")).expect("read"), None);
+
+        vaults.switch(&state, "second").expect("open second");
+        assert_eq!(
+            crate::backup::restore_into(&state, &backup, false).expect_err("not the first vault"),
+            crate::backup::OLD_BACKUP_FIRST_VAULT
+        );
+
+        vaults.switch(&state, &legacy).expect("first vault");
+        crate::backup::restore_into(&state, &backup, true).expect("first vault accepts it");
+        assert!(contents(&state).contains(&"item:gamma note".to_string()));
+        assert_eq!(uid(&state), legacy, "the vault keeps its id after the upgrade");
     }
 }

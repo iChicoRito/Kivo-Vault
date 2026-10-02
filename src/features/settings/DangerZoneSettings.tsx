@@ -99,8 +99,9 @@ export default function DangerZoneSettings() {
             Danger zone
           </Typography>
           <Typography color="muted" type="body-sm">
-            Delete all data and reset Kivo. This removes every note, source, file, password,
-            collection, and setting on this device, then starts setup again. It cannot be undone.
+            Delete all data in this vault and set it up again. This removes every note, source,
+            file, password, collection, and setting in the open vault. Your other vaults are not
+            touched. It cannot be undone.
           </Typography>
         </div>
         <Button className="justify-self-start" variant="danger" onPress={() => void start()}>
@@ -137,9 +138,9 @@ export default function DangerZoneSettings() {
                 ) : (
                   <>
                     <Typography type="body">
-                      Every note, source, file, password, collection, and setting will be deleted
-                      from this device. Backups you saved elsewhere are not touched. Make a backup
-                      first if you may want this data later.
+                      Every note, source, file, password, collection, and setting in this vault
+                      will be deleted. Your other vaults and the backups you saved are not touched.
+                      Make a backup first if you may want this data later.
                     </Typography>
                     <TextField value={typed} onChange={setTyped}>
                       <Label>Type {CONFIRM_WORD} to confirm</Label>

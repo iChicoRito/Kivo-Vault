@@ -890,6 +890,13 @@ pub fn write_setup(connection: &mut Connection, input: &SetupInput) -> rusqlite:
     transaction.commit()
 }
 
+/// The id of the vault this database belongs to (migration 21).
+pub fn read_vault_uid(connection: &Connection) -> Result<String, String> {
+    connection
+        .query_row("SELECT uid FROM vault_identity WHERE id = 1", [], |row| row.get(0))
+        .map_err(|error| format!("Could not read the vault identity: {error}"))
+}
+
 pub fn read_profile(connection: &Connection) -> rusqlite::Result<Profile> {
     connection.query_row(
         "SELECT owner_name, vault_name, setup_completed_at FROM profile WHERE id = 1",

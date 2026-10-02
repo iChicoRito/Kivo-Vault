@@ -115,7 +115,7 @@ export default function DeleteVaultDialog({ vault, onClose }: DeleteVaultDialogP
                 />
                 <Modal.Body className="grid gap-3">
                   <Typography color="muted" type="body-sm">
-                    The backup goes to Documents › Kivo Backups. Your other vaults are not touched.
+                    The backup goes to Documents › Kivo Backups › {name}. Your other vaults are not touched.
                   </Typography>
                   {lockEnabled ? (
                     <TextField type="password" value={password} onChange={setPassword}>

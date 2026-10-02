@@ -11,6 +11,7 @@ import {
 } from '../../data/deviceUnlock'
 import { errorText, type VaultScope } from '../../data/recovery'
 import { notifySuccess } from '../../lib/feedback'
+import { useSecurityChanged } from '../../lib/useVaultChanged'
 
 const ROWS: Array<{ scope: VaultScope; title: string; password: string }> = [
   { scope: 'content', title: 'Master Password', password: 'Master Password' },
@@ -39,6 +40,8 @@ export default function DeviceUnlockSettings() {
   useEffect(() => {
     load()
   }, [load])
+  // Setting or removing the Master Password changes what can be offered here.
+  useSecurityChanged(load)
 
   function close() {
     if (busy) return

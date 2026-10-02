@@ -35,6 +35,8 @@ struct OpenedBackup {
     files_root: PathBuf,
     connection: Option<Connection>,
     keys: ContentKeyState,
+    /// The backup's vault id, read before the temp copy is migrated.
+    vault_uid: Option<String>,
 }
 
 impl Drop for OpenedBackup {
@@ -83,7 +85,9 @@ fn open_backup(path: &Path, password: Option<&str>, recovery_key: Option<&str>) 
         keys: ContentKeyState::default(),
         stage,
         files_root,
+        vault_uid: None,
     };
+    opened.vault_uid = backup::backup_vault_uid(&opened.stage.join("kivo.db"))?;
     // Only the temp copy is upgraded; the backup itself is never changed.
     let mut connection = Connection::open(opened.stage.join("kivo.db"))
         .map_err(|error| format!("Could not read the backup: {error}"))?;
@@ -114,9 +118,13 @@ pub(crate) fn list_backup_items(
     path: &Path,
     password: Option<&str>,
     recovery_key: Option<&str>,
-    live: Option<&DatabaseState>,
+    live: Option<(&DatabaseState, bool)>,
 ) -> Result<Vec<BackupItem>, String> {
     let opened = open_backup(path, password, recovery_key)?;
+    if let Some((state, original)) = live {
+        check_vault(&opened, state, original)?;
+    }
+    let live = live.map(|(state, _)| state);
     let items = portability::read_items_with_ids(opened.connection(), &opened.keys, None, &[])?;
     let guard = match live {
         Some(state) => Some(state.require_connection()?),
@@ -187,11 +195,13 @@ pub(crate) fn restore_backup_items(
     password: Option<&str>,
     recovery_key: Option<&str>,
     ids: &[String],
+    original: bool,
 ) -> Result<ImportReport, String> {
     if ids.is_empty() {
         return Ok(ImportReport::default());
     }
     let opened = open_backup(path, password, recovery_key)?;
+    check_vault(&opened, state, original)?;
     let mut connection = state.require_connection()?;
     portability::copy_items_from(
         connection.as_mut().expect("checked above"),
@@ -202,6 +212,15 @@ pub(crate) fn restore_backup_items(
         &opened.files_root,
         ids,
     )
+}
+
+/// Items come back only into the vault the backup was made from.
+fn check_vault(opened: &OpenedBackup, state: &DatabaseState, original: bool) -> Result<(), String> {
+    let live_uid = {
+        let guard = state.require_connection()?;
+        crate::database::read_vault_uid(guard.as_ref().expect("checked above"))?
+    };
+    backup::check_backup_vault(opened.vault_uid.as_deref(), &live_uid, original)
 }
 
 /// A wrong password counts toward the same wrong-try wait as a full restore.
@@ -221,9 +240,11 @@ pub fn list_backup_contents(
     password: Option<String>,
     recovery_key: Option<String>,
     state: State<'_, DatabaseState>,
+    vaults: State<'_, crate::vaults::VaultsState>,
 ) -> Result<Vec<BackupItem>, String> {
+    let original = vaults.open_is_original();
     with_attempt(&state, || {
-        list_backup_items(Path::new(&path), password.as_deref(), recovery_key.as_deref(), Some(state.inner()))
+        list_backup_items(Path::new(&path), password.as_deref(), recovery_key.as_deref(), Some((state.inner(), original)))
     })
 }
 
@@ -234,9 +255,11 @@ pub fn restore_from_backup(
     recovery_key: Option<String>,
     ids: Vec<String>,
     state: State<'_, DatabaseState>,
+    vaults: State<'_, crate::vaults::VaultsState>,
 ) -> Result<ImportReport, String> {
+    let original = vaults.open_is_original();
     with_attempt(&state, || {
-        restore_backup_items(&state, Path::new(&path), password.as_deref(), recovery_key.as_deref(), &ids)
+        restore_backup_items(&state, Path::new(&path), password.as_deref(), recovery_key.as_deref(), &ids, original)
     })
 }
 
@@ -301,6 +324,20 @@ mod tests {
         encryption::enable(connection, &state.files_dir(), PASSWORD).expect("encrypt vault");
     }
 
+    /// Makes `live` the same vault as `old`: a backup of `old` may restore into it.
+    fn same_vault(old: &DatabaseState, live: &DatabaseState) {
+        let uid = {
+            let connection = old.require_connection().expect("connection");
+            crate::database::read_vault_uid(connection.as_ref().expect("initialized")).expect("uid")
+        };
+        let connection = live.require_connection().expect("connection");
+        connection
+            .as_ref()
+            .expect("initialized")
+            .execute("UPDATE vault_identity SET uid = ?1 WHERE id = 1", [uid])
+            .expect("same vault");
+    }
+
     fn live_items(state: &DatabaseState) -> Vec<(String, portability::PortableItem)> {
         let connection = state.require_connection().expect("connection");
         portability::read_items_with_ids(connection.as_ref().expect("initialized"), state.content_key(), None, &[])
@@ -325,7 +362,8 @@ mod tests {
         assert_eq!((plan.title.as_str(), plan.collection.as_deref()), ("Plan", Some("Work")));
 
         let live = temp.vault("live");
-        let report = restore_backup_items(&live, backup_path, None, None, &["note-1".into(), "file-1".into()])
+        same_vault(&old, &live);
+        let report = restore_backup_items(&live, backup_path, None, None, &["note-1".into(), "file-1".into()], false)
             .expect("restore");
         assert_eq!(report.imported, 2, "{:?}", report.skipped);
         let items = live_items(&live);
@@ -364,7 +402,8 @@ mod tests {
         assert!(listed.iter().any(|item| item.title == "Plan"), "titles are decrypted");
 
         let live = temp.vault("live");
-        let report = restore_backup_items(&live, backup_path, Some(PASSWORD), None, &["file-1".into()])
+        same_vault(&old, &live);
+        let report = restore_backup_items(&live, backup_path, Some(PASSWORD), None, &["file-1".into()], false)
             .expect("restore");
         assert_eq!(report.imported, 1, "{:?}", report.skipped);
         let items = live_items(&live);
@@ -404,6 +443,7 @@ mod tests {
 
         // The live vault has the same file bytes under another name, and no note.
         let live = temp.vault("live");
+        same_vault(&old, &live);
         {
             let connection = live.require_connection().expect("connection");
             connection
@@ -419,14 +459,14 @@ mod tests {
         }
         fs::write(live.files_dir().join("copy.txt"), b"hello").expect("write live file");
 
-        let listed = list_backup_items(backup_path, None, None, Some(&live)).expect("list");
+        let listed = list_backup_items(backup_path, None, None, Some((&live, false))).expect("list");
         let marked: Vec<(&str, bool)> = listed.iter().map(|item| (item.kind.as_str(), item.already_saved)).collect();
         assert!(marked.contains(&("file", true)));
         assert!(marked.contains(&("note", false)));
 
         // Restoring a marked row is an explicit choice: it still adds a copy.
         let file_id = listed.iter().find(|item| item.kind == "file").unwrap().id.clone();
-        let report = restore_backup_items(&live, backup_path, None, None, &[file_id]).expect("restore");
+        let report = restore_backup_items(&live, backup_path, None, None, &[file_id], false).expect("restore");
         assert_eq!(report.imported, 1);
     }
 
@@ -450,7 +490,8 @@ mod tests {
         assert!(listed.iter().any(|item| item.title == "Plan"), "encrypted titles open with the kit");
 
         let live = temp.vault("live");
-        let report = restore_backup_items(&live, backup_path, None, Some(&draft.recovery_key), &["note-1".into()])
+        same_vault(&old, &live);
+        let report = restore_backup_items(&live, backup_path, None, Some(&draft.recovery_key), &["note-1".into()], false)
             .expect("restore with the kit");
         assert_eq!(report.imported, 1, "{:?}", report.skipped);
         assert!(live_items(&live).iter().any(|(_, item)| item.title == "Plan"));

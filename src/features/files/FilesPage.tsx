@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   Alert,
   Button,
@@ -28,6 +29,8 @@ import PageHeader from '../../app/PageHeader'
 import { CollectionSelect, ConfirmDialog } from '../../components/items/dialogs'
 import { FileTypeIcon } from '../../components/items/FileTypeIcon'
 import { ItemCard, type ItemCardAction } from '../../components/items/ItemCard'
+import { FilterMenu } from '../../components/items/FilterMenu'
+import { useLibraryFilters } from '../../components/items/useLibraryFilters'
 import { SelectionBar } from '../../components/items/SelectionBar'
 import { useSelection } from '../../components/items/useSelection'
 import { ListScrollArea } from '../../components/items/ListScrollArea'
@@ -41,7 +44,6 @@ import {
 } from '../../data/items'
 import { openItemFile, pickFiles, revealItemFile } from '../../data/files'
 import { notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
-import { useVaultChanged } from '../../lib/useVaultChanged'
 import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { startItemDrag } from '../collections/itemDrag'
 import { DialogHeader } from '../../components/DialogHeader'
@@ -82,7 +84,7 @@ function FilesLoadingSkeleton() {
 
 export function FilesPage() {
   const [loadState, setLoadState] = useState<LoadState>('loading')
-  const [attempt, setAttempt] = useState(0)
+  const [collectionLocked, setCollectionLocked] = useState(false)
   const [files, setFiles] = useState<ItemSummary[]>([])
   const { importPaths, dialog: importDialog } = useFileImport()
 
@@ -94,23 +96,31 @@ export function FilesPage() {
   const [moveTarget, setMoveTarget] = useState<MoveState>(null)
   const [trashTarget, setTrashTarget] = useState<string | null>(null)
 
-  useVaultChanged(() => setAttempt((value) => value + 1))
-
-  const loadFiles = useCallback(async () => {
-    setLoadState((state) => (state === 'ready' ? state : 'loading'))
-
-    try {
-      const loaded = await listItems({ kind: 'file' })
-      setFiles(loaded)
-      setLoadState('ready')
-    } catch {
-      setLoadState('error')
-    }
-  }, [])
+  const { filter, menuProps, hasActiveFilters, refreshVersion, reload } = useLibraryFilters('file')
+  const selection = useSelection()
 
   useEffect(() => {
-    void loadFiles()
-  }, [loadFiles, attempt])
+    let active = true
+    setLoadState('loading')
+    setCollectionLocked(false)
+    selection.clear()
+
+    listItems(filter)
+      .then((loaded) => {
+        if (!active) return
+        setFiles(loaded)
+        setLoadState('ready')
+      })
+      .catch((reason: unknown) => {
+        if (!active) return
+        setCollectionLocked(String(reason).includes('This collection is locked'))
+        setLoadState('error')
+      })
+
+    return () => {
+      active = false
+    }
+  }, [filter, refreshVersion])
 
   async function handleImport() {
     setActionError(null)
@@ -131,7 +141,7 @@ export function FilesPage() {
     try {
       const summary = await importPaths(paths)
 
-      await loadFiles()
+      reload()
 
       if (summary.failed > 0) notifyError(IMPORT_ERROR)
       else if (summary.imported === 1 && summary.skipped === 0) notifySuccess('File imported')
@@ -201,7 +211,7 @@ export function FilesPage() {
       })
 
       setRenameTarget(null)
-      await loadFiles()
+      reload()
     } catch {
       setRenameError(RENAME_ERROR)
       notifyError(RENAME_ERROR)
@@ -214,19 +224,17 @@ export function FilesPage() {
     try {
       await moveItemsToCollection([moveTarget.id], moveTarget.collectionId)
       setMoveTarget(null)
-      await loadFiles()
+      reload()
       notifySuccess('File moved to collection')
     } catch {
       notifyError(MOVE_ERROR)
     }
   }
 
-  const selection = useSelection()
-
   async function trashSelected(ids: string[]) {
     const moved = await trashManyWithUndo(ids)
     if (!moved) return
-    await loadFiles()
+    reload()
     selection.clear()
   }
 
@@ -239,7 +247,7 @@ export function FilesPage() {
 
     const moved = await trashWithUndo({ ids: [id], label: 'File' })
 
-    if (moved) await loadFiles()
+    if (moved) reload()
   }
 
   const heading = (
@@ -261,6 +269,10 @@ export function FilesPage() {
         ) : null}
       </div>
 
+      <div className="flex flex-wrap items-end gap-3">
+        <FilterMenu {...menuProps} />
+      </div>
+
       {loadState === 'error' ? (
         <Alert aria-labelledby="files-error-title" role="alert" status="danger">
           <Alert.Content className="grid gap-3">
@@ -268,18 +280,28 @@ export function FilesPage() {
               ERROR
             </Typography>
             <Typography id="files-error-title" type="h2">
-              Your files could not load
+              {collectionLocked ? 'This collection is locked' : 'Your files could not load'}
             </Typography>
             <Typography type="body">
-              Kivo could not read saved file records. Try again to reload this list.
+              {collectionLocked
+                ? 'Open this collection from Collections, then try again.'
+                : 'Kivo could not read saved file records. Try again to reload this list.'}
             </Typography>
+            {collectionLocked ? (
+              <Link className="underline" to="/collections">Open Collections</Link>
+            ) : null}
             <Button
               className="justify-self-start"
               variant="secondary"
-              onPress={() => setAttempt((value) => value + 1)}
+              onPress={reload}
             >
               Try again
             </Button>
+            {hasActiveFilters ? (
+              <Button className="justify-self-start" variant="secondary" onPress={menuProps.onClear}>
+                Clear filters
+              </Button>
+            ) : null}
           </Alert.Content>
         </Alert>
       ) : null}
@@ -290,7 +312,7 @@ export function FilesPage() {
         </Typography>
       ) : null}
 
-      {loadState === 'ready' && files.length === 0 ? (
+      {loadState === 'ready' && files.length === 0 && !hasActiveFilters ? (
         <EmptyState className="flex min-h-[32rem] flex-col items-center justify-center gap-5 rounded-3xl border border-dashed border-default px-6 py-16 text-center">
           <span
             aria-hidden="true"
@@ -310,6 +332,16 @@ export function FilesPage() {
             <HugeiconsIcon aria-hidden="true" icon={PlusSignIcon} size={18} />
             Import Files
           </Button>
+        </EmptyState>
+      ) : null}
+
+      {loadState === 'ready' && files.length === 0 && hasActiveFilters ? (
+        <EmptyState className="grid justify-items-start gap-3">
+          <Typography type="h2">No files match your filters.</Typography>
+          <Typography color="muted" type="body">
+            Choose different filters, or clear them to see more files.
+          </Typography>
+          <Button variant="secondary" onPress={menuProps.onClear}>Clear filters</Button>
         </EmptyState>
       ) : null}
 

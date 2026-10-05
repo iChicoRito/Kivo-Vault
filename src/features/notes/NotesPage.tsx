@@ -26,17 +26,18 @@ import {
   StarOffIcon,
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import PageHeader from '../../app/PageHeader'
 import { usePreferences } from '../../app/preferences'
 import { ItemCard, type ItemCardAction } from '../../components/items/ItemCard'
+import { FilterMenu } from '../../components/items/FilterMenu'
+import { useLibraryFilters } from '../../components/items/useLibraryFilters'
 import { SelectionBar } from '../../components/items/SelectionBar'
 import { useSelection } from '../../components/items/useSelection'
 import { ListScrollArea } from '../../components/items/ListScrollArea'
 import { CollectionSelect, ConfirmDialog } from '../../components/items/dialogs'
 import { notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
-import { useVaultChanged } from '../../lib/useVaultChanged'
 import type { NoteView } from '../../data/settings'
 import {
   listItems,
@@ -126,30 +127,36 @@ export function NotesPage() {
   const [loadState, setLoadState] = useState<LoadState>('loading')
   const [items, setItems] = useState<ItemSummary[]>([])
   const [search, setSearch] = useState('')
-  const [attempt, setAttempt] = useState(0)
+  const [collectionLocked, setCollectionLocked] = useState(false)
   const [trashTarget, setTrashTarget] = useState<ItemSummary | null>(null)
   const [moveTarget, setMoveTarget] = useState<MoveState | null>(null)
 
-  useVaultChanged(() => setAttempt((value) => value + 1))
+  const { filter, menuProps, hasActiveFilters, refreshVersion, reload } = useLibraryFilters('note', search)
+  const hasSearchOrFilters = hasActiveFilters || search.trim() !== ''
+  const selection = useSelection()
 
   useEffect(() => {
     let active = true
-    setLoadState((state) => (state === 'ready' ? state : 'loading'))
+    setLoadState('loading')
+    setCollectionLocked(false)
+    selection.clear()
 
-    listItems({ kind: 'note', query: search.trim() || undefined })
+    listItems(filter)
       .then((loaded) => {
         if (!active) return
         setItems(sortPinnedFirst(loaded))
         setLoadState('ready')
       })
-      .catch(() => {
-        if (active) setLoadState('error')
+      .catch((reason: unknown) => {
+        if (!active) return
+        setCollectionLocked(String(reason).includes('This collection is locked'))
+        setLoadState('error')
       })
 
     return () => {
       active = false
     }
-  }, [search, attempt])
+  }, [filter, refreshVersion])
 
   function handleCreate() {
     navigate('/notes/new')
@@ -158,11 +165,7 @@ export function NotesPage() {
   async function toggleFavorite(item: ItemSummary) {
     try {
       await setItemsFavorite([item.id], !item.isFavorite)
-      setItems((current) =>
-        current.map((entry) =>
-          entry.id === item.id ? { ...entry, isFavorite: !entry.isFavorite } : entry,
-        ),
-      )
+      reload()
     } catch {
       notifyError('Kivo could not change the favorite. Try again.')
     }
@@ -182,8 +185,6 @@ export function NotesPage() {
       notifyError('Kivo could not change the pin. Try again.')
     }
   }
-
-  const selection = useSelection()
 
   async function trashSelected(ids: string[]) {
     const moved = await trashManyWithUndo(ids)
@@ -232,6 +233,7 @@ export function NotesPage() {
     try {
       await moveItemsToCollection([target.id], target.collectionId)
       setMoveTarget(null)
+      reload()
       notifySuccess('Note moved to collection')
     } catch {
       notifyError('Kivo could not move this note. Try again.')
@@ -256,10 +258,13 @@ export function NotesPage() {
       </div>
 
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <TextField className="w-full max-w-md" value={search} onChange={setSearch}>
-          <Label>Search notes</Label>
-          <Input fullWidth placeholder="I am looking for..." variant="secondary" />
-        </TextField>
+        <div className="flex min-w-0 flex-1 flex-wrap items-end gap-3">
+          <TextField className="w-full max-w-md" value={search} onChange={setSearch}>
+            <Label>Search notes</Label>
+            <Input fullWidth placeholder="I am looking for..." variant="secondary" />
+          </TextField>
+          <FilterMenu {...menuProps} />
+        </div>
 
         <Tabs
           className="w-fit"
@@ -306,20 +311,32 @@ export function NotesPage() {
             <Typography className={panelLabelClass} color="muted" type="body-xs" weight="bold">
               ERROR
             </Typography>
-            <Typography type="h2">{notesErrorTitle}</Typography>
-            <Typography type="body">{notesErrorDescription}</Typography>
+            <Typography type="h2">
+              {collectionLocked ? 'This collection is locked' : notesErrorTitle}
+            </Typography>
+            <Typography type="body">
+              {collectionLocked ? 'Open this collection from Collections, then try again.' : notesErrorDescription}
+            </Typography>
+            {collectionLocked ? (
+              <Link className="underline" to="/collections">Open Collections</Link>
+            ) : null}
             <Button
               className="justify-self-start"
               variant="secondary"
-              onPress={() => setAttempt((current) => current + 1)}
+              onPress={reload}
             >
               Try again
             </Button>
+            {hasActiveFilters ? (
+              <Button className="justify-self-start" variant="secondary" onPress={menuProps.onClear}>
+                Clear filters
+              </Button>
+            ) : null}
           </Alert.Content>
         </Alert>
       ) : null}
 
-      {loadState === 'ready' && items.length === 0 && search.trim() === '' ? (
+      {loadState === 'ready' && items.length === 0 && !hasSearchOrFilters ? (
         <EmptyState className="flex min-h-[32rem] flex-col items-center justify-center gap-5 rounded-3xl border border-dashed border-default px-6 py-16 text-center">
           <span
             aria-hidden="true"
@@ -342,12 +359,19 @@ export function NotesPage() {
         </EmptyState>
       ) : null}
 
-      {loadState === 'ready' && items.length === 0 && search.trim() !== '' ? (
+      {loadState === 'ready' && items.length === 0 && hasSearchOrFilters ? (
         <EmptyState className="grid justify-items-start gap-3">
-          <Typography type="h2">No notes match your search.</Typography>
-          <Typography color="muted" type="body">
-            Try a different word, or clear the search to see every note.
+          <Typography type="h2">
+            {hasActiveFilters ? 'No notes match your search or filters.' : 'No notes match your search.'}
           </Typography>
+          <Typography color="muted" type="body">
+            {hasActiveFilters
+              ? 'Choose different filters, or clear them to see more notes.'
+              : 'Try a different word, or clear the search to see every note.'}
+          </Typography>
+          {hasActiveFilters ? (
+            <Button variant="secondary" onPress={menuProps.onClear}>Clear filters</Button>
+          ) : null}
         </EmptyState>
       ) : null}
 

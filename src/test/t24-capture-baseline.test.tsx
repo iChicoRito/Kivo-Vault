@@ -39,6 +39,7 @@ const feedbackMock = vi.hoisted(() => ({
 vi.mock('../data/items', () => itemsMock)
 vi.mock('../data/files', () => filesMock)
 vi.mock('../data/collections', () => collectionsMock)
+vi.mock('../data/tags', () => ({ listTags: vi.fn().mockResolvedValue([]) }))
 vi.mock('../lib/feedback', () => feedbackMock)
 
 import type { VaultItem } from '../data/items'

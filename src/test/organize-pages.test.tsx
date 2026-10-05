@@ -74,6 +74,7 @@ vi.mock('../features/collections/CollectionFolderPanel', () => ({ CollectionFold
 vi.mock('../data/items', () => itemsMock)
 vi.mock('../data/files', () => filesMock)
 vi.mock('../data/collections', () => collectionsMock)
+vi.mock('../data/tags', () => ({ listTags: vi.fn().mockResolvedValue([]) }))
 vi.mock('../data/settings', () => settingsMock)
 vi.mock('../data/dashboard', () => dashboardMock)
 vi.mock('../data/portability', () => portabilityMock)

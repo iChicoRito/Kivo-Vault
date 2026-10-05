@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getTauriInvoke } from './setup'
@@ -128,10 +128,12 @@ describe('switching from the lock screen', () => {
 
     expect(await screen.findByRole('heading', { name: 'Unlock your vault' }, slow)).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: 'Vault: Work. Switch vault' }, slow))
-    fireEvent.click(await screen.findByRole('menuitemradio', { name: 'Home' }, slow))
+    const home = await screen.findByRole('menuitemradio', { name: 'Home' }, slow)
+    await act(async () => { fireEvent.click(home) })
 
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('switch_vault', { id: 'home' }), slow)
+    expect(invoke.mock.calls.filter(([command]) => command === 'load_boot_state')).toHaveLength(2)
     expect(await screen.findByRole('button', { name: 'Vault: Home. Switch vault' }, slow)).toBeInTheDocument()
-    expect(invoke).toHaveBeenCalledWith('switch_vault', { id: 'home' })
     // The boot flow ran again for the new vault, from the database check on.
     expect(invoke.mock.calls.filter(([command]) => command === 'initialize_database')).toHaveLength(2)
     expect(invoke.mock.calls.filter(([command]) => command === 'load_boot_state')).toHaveLength(2)

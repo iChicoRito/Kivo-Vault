@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   Alert,
   Button,
@@ -23,13 +24,14 @@ import { HugeiconsIcon } from '@hugeicons/react'
 import PageHeader from '../../app/PageHeader'
 import { CollectionSelect, ConfirmDialog } from '../../components/items/dialogs'
 import { ItemCard, type ItemCardAction } from '../../components/items/ItemCard'
+import { FilterMenu } from '../../components/items/FilterMenu'
+import { useLibraryFilters } from '../../components/items/useLibraryFilters'
 import { SelectionBar } from '../../components/items/SelectionBar'
 import { useSelection } from '../../components/items/useSelection'
 import { ListScrollArea } from '../../components/items/ListScrollArea'
 import { notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
-import { useVaultChanged } from '../../lib/useVaultChanged'
 import { openSourceUrl } from '../../data/files'
-import { listItems, loadItem, moveItemsToCollection, type VaultItem } from '../../data/items'
+import { listItems, loadItem, moveItemsToCollection, type ItemFilter, type VaultItem } from '../../data/items'
 import { moduleRoutes } from '../modules/ModulePage'
 import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { startItemDrag } from '../collections/itemDrag'
@@ -57,8 +59,8 @@ const OPEN_ERROR = 'Kivo could not open this address.'
 const MOVE_ERROR = 'Kivo could not move this source. Try again.'
 
 // Item summaries stay lean, so each row reads its full record for the address.
-async function loadSources(query?: string) {
-  const summaries = await listItems({ kind: 'source', query })
+async function loadSources(filter: ItemFilter) {
+  const summaries = await listItems(filter)
   return Promise.all(summaries.map((summary) => loadItem(summary.id)))
 }
 
@@ -89,32 +91,38 @@ export function SourcesPage() {
   const [loadState, setLoadState] = useState<LoadState>('loading')
   const [sources, setSources] = useState<VaultItem[]>([])
   const [search, setSearch] = useState('')
-  const [attempt, setAttempt] = useState(0)
+  const [collectionLocked, setCollectionLocked] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [trashTarget, setTrashTarget] = useState<VaultItem | null>(null)
   const [moveTarget, setMoveTarget] = useState<MoveState>(null)
 
-  useVaultChanged(() => setAttempt((value) => value + 1))
+  const { filter, menuProps, hasActiveFilters, refreshVersion, reload } = useLibraryFilters('source', search)
+  const hasSearchOrFilters = hasActiveFilters || search.trim() !== ''
+  const selection = useSelection()
 
   useEffect(() => {
     let active = true
-    setLoadState((state) => (state === 'ready' ? state : 'loading'))
+    setLoadState('loading')
+    setCollectionLocked(false)
+    selection.clear()
 
-    loadSources(search.trim() || undefined)
+    loadSources(filter)
       .then((loaded) => {
         if (!active) return
         setSources(loaded)
         setLoadState('ready')
       })
-      .catch(() => {
-        if (active) setLoadState('error')
+      .catch((reason: unknown) => {
+        if (!active) return
+        setCollectionLocked(String(reason).includes('This collection is locked'))
+        setLoadState('error')
       })
 
     return () => {
       active = false
     }
-  }, [search, attempt])
+  }, [filter, refreshVersion])
 
   function openCreate() {
     setEditingId(null)
@@ -135,8 +143,6 @@ export function SourcesPage() {
       notifyError(OPEN_ERROR)
     }
   }
-
-  const selection = useSelection()
 
   async function trashSelected(ids: string[]) {
     const moved = await trashManyWithUndo(ids)
@@ -163,6 +169,7 @@ export function SourcesPage() {
     try {
       await moveItemsToCollection([moveTarget.id], moveTarget.collectionId)
       setMoveTarget(null)
+      reload()
       notifySuccess('Source moved to collection')
     } catch {
       notifyError(MOVE_ERROR)
@@ -186,11 +193,12 @@ export function SourcesPage() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="flex flex-wrap items-end gap-3">
         <TextField className="w-full max-w-md" value={search} onChange={setSearch}>
           <Label>Search link</Label>
           <Input fullWidth placeholder="I am looking for..." variant="secondary" />
         </TextField>
+        <FilterMenu {...menuProps} />
       </div>
 
       {loadState === 'error' ? (
@@ -199,20 +207,32 @@ export function SourcesPage() {
             <Typography className={panelLabelClass} color="muted" type="body-xs" weight="bold">
               ERROR
             </Typography>
-            <Typography type="h2">{sourcesErrorTitle}</Typography>
-            <Typography type="body">{sourcesErrorDescription}</Typography>
+            <Typography type="h2">
+              {collectionLocked ? 'This collection is locked' : sourcesErrorTitle}
+            </Typography>
+            <Typography type="body">
+              {collectionLocked ? 'Open this collection from Collections, then try again.' : sourcesErrorDescription}
+            </Typography>
+            {collectionLocked ? (
+              <Link className="underline" to="/collections">Open Collections</Link>
+            ) : null}
             <Button
               className="justify-self-start"
               variant="secondary"
-              onPress={() => setAttempt((current) => current + 1)}
+              onPress={reload}
             >
               Try again
             </Button>
+            {hasActiveFilters ? (
+              <Button className="justify-self-start" variant="secondary" onPress={menuProps.onClear}>
+                Clear filters
+              </Button>
+            ) : null}
           </Alert.Content>
         </Alert>
       ) : null}
 
-      {loadState === 'ready' && sources.length === 0 && search.trim() === '' ? (
+      {loadState === 'ready' && sources.length === 0 && !hasSearchOrFilters ? (
         <EmptyState className="flex min-h-[32rem] flex-col items-center justify-center gap-5 rounded-3xl border border-dashed border-default px-6 py-16 text-center">
           <span
             aria-hidden="true"
@@ -235,12 +255,19 @@ export function SourcesPage() {
         </EmptyState>
       ) : null}
 
-      {loadState === 'ready' && sources.length === 0 && search.trim() !== '' ? (
+      {loadState === 'ready' && sources.length === 0 && hasSearchOrFilters ? (
         <EmptyState className="grid justify-items-start gap-3">
-          <Typography type="h2">No sources match your search.</Typography>
-          <Typography color="muted" type="body">
-            Try a different word, or clear the search to see every source.
+          <Typography type="h2">
+            {hasActiveFilters ? 'No sources match your search or filters.' : 'No sources match your search.'}
           </Typography>
+          <Typography color="muted" type="body">
+            {hasActiveFilters
+              ? 'Choose different filters, or clear them to see more sources.'
+              : 'Try a different word, or clear the search to see every source.'}
+          </Typography>
+          {hasActiveFilters ? (
+            <Button variant="secondary" onPress={menuProps.onClear}>Clear filters</Button>
+          ) : null}
         </EmptyState>
       ) : null}
 
@@ -351,7 +378,7 @@ export function SourcesPage() {
         itemId={editingId}
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
-        onSaved={() => setAttempt((current) => current + 1)}
+        onSaved={reload}
       />
 
       <Modal

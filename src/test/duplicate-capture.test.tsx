@@ -40,6 +40,7 @@ vi.mock('../data/items', async () => {
 })
 vi.mock('../data/files', () => filesMock)
 vi.mock('../data/collections', () => ({ listCollections: vi.fn().mockResolvedValue([]) }))
+vi.mock('../data/tags', () => ({ listTags: vi.fn().mockResolvedValue([]) }))
 vi.mock('../data/linkDetails', () => ({ fetchLinkDetails: vi.fn() }))
 vi.mock('../data/settings', () => ({ loadPreferences: vi.fn(), savePreferences: vi.fn() }))
 vi.mock('../lib/feedback', () => feedbackMock)

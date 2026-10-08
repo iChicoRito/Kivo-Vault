@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import Landing from '../../landing/Landing'
 import { demoInvoke, resetDemoBackend } from '../../landing/demo/backend'
@@ -37,6 +37,30 @@ describe('landing page', () => {
     render(<Landing />)
 
     expect(screen.getByTitle('Kivo demo')).toHaveAttribute('src', 'demo.html?theme=dark')
+  })
+
+  it.each(['button', 'Escape'])('opens privacy details and dismisses with %s', async (dismiss) => {
+    render(<Landing />)
+
+    expect(screen.queryByRole('dialog', { name: 'Privacy and storage' })).not.toBeInTheDocument()
+    const trigger = screen.getByRole('link', { name: 'Privacy and storage' })
+    act(() => trigger.focus())
+    fireEvent.click(trigger)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Privacy and storage' })
+    expect(within(dialog).getByRole('heading', { name: 'Stored on your computer' })).toBeVisible()
+    expect(within(dialog).getByRole('heading', { name: 'When Kivo connects to websites' })).toBeVisible()
+
+    if (dismiss === 'button') {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Close', exact: true }))
+    } else {
+      fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' })
+    }
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Privacy and storage' })).not.toBeInTheDocument()
+      expect(trigger).toHaveFocus()
+    })
   })
 })
 

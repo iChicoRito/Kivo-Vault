@@ -9,6 +9,7 @@ import KivoMark from '@/components/ui/KivoMark'
 import SplitText from '@/components/ui/SplitText'
 import KivoDemo from './demo/KivoDemo'
 import { INSTALLER } from './download'
+import PrivacyStorageDialog from './PrivacyStorageDialog'
 import { applyTheme, currentTheme, type Theme } from './theme'
 import { useInView } from './useInView'
 
@@ -196,9 +197,7 @@ export default function Landing() {
             <a className="w-fit text-muted transition-colors hover:text-foreground" href="#features-heading">
               Features
             </a>
-            <a className="w-fit text-muted transition-colors hover:text-foreground" href="#local-heading">
-              Privacy and storage
-            </a>
+            <PrivacyStorageDialog />
           </nav>
         </div>
 

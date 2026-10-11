@@ -63,7 +63,7 @@ export function NoteContentEditor({ initialHtml, onChange, status }: NoteContent
 
   return (
     <div className="grid gap-3">
-      <div className="relative flex h-[60vh] min-h-[24rem] flex-col rounded-3xl bg-background-secondary">
+      <div className="relative flex h-[60vh] min-h-[24rem] min-w-0 flex-col rounded-3xl bg-background-secondary">
         <ScrollShadow className="kivo-note-field min-h-0 flex-1 overscroll-contain text-base leading-7">
           <EditorContent editor={editor} />
         </ScrollShadow>

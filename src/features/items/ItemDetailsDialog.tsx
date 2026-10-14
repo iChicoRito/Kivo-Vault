@@ -15,15 +15,12 @@ import {
 } from '@heroui/react'
 import {
   ArrowDown01Icon,
-  Delete02Icon,
-  FileExportIcon,
   InformationCircleIcon,
 } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 
 import {
   CollectionSelect,
-  ConfirmDialog,
   TagPicker,
 } from '../../components/items/dialogs'
 import { openItemFile, revealItemFile } from '../../data/files'
@@ -35,12 +32,23 @@ import {
   type ItemKind,
   type VaultItem,
 } from '../../data/items'
-import { notifyError, notifySuccess, trashWithUndo } from '../../lib/feedback'
+import { notifyError, notifySuccess } from '../../lib/feedback'
 import { FilePreviewDialog } from '../preview/FilePreviewDialog'
 import { matchesShortcut } from '../../app/shortcuts'
 import { indexFile, listIndexState, type IndexState } from '../../data/indexing'
-import { exportItemsJson, pickSaveFile } from '../../data/portability'
 import { DialogHeader } from '../../components/DialogHeader'
+
+/** One fact in the details grid: a small label over its value. Dates render as `<time>`. */
+function DetailCell({ label, value, isDate = false }: { label: string; value: string; isDate?: boolean }) {
+  return (
+    <div className="grid min-w-0 gap-0.5">
+      <dt className="text-xs text-muted">{label}</dt>
+      <dd className="m-0 text-sm font-medium tabular-nums">
+        {isDate ? <time dateTime={value}>{formatDate(value)}</time> : value}
+      </dd>
+    </div>
+  )
+}
 
 type ItemDetailsDialogProps = {
   itemId: string | null
@@ -107,7 +115,6 @@ export function ItemDetailsDialog({ itemId, onClose, onChanged }: ItemDetailsDia
   const [item, setItem] = useState<VaultItem | null>(null)
   const [loadState, setLoadState] = useState<LoadState>('loading')
   const [saveError, setSaveError] = useState<string | null>(null)
-  const [confirmOpen, setConfirmOpen] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [indexStatus, setIndexStatus] = useState<IndexState['status'] | null>(null)
 
@@ -234,24 +241,6 @@ export function ItemDetailsDialog({ itemId, onClose, onChanged }: ItemDetailsDia
 
     const saved = await persist({ title: trimmedTitle, description }, true)
     if (saved) notifySuccess('Item saved')
-  }
-
-  async function handleTrash() {
-    if (!item) return
-
-    const id = item.id
-
-    setConfirmOpen(false)
-
-    const moved = await trashWithUndo({ ids: [id], label: 'Item' })
-
-    if (moved) {
-      onChanged()
-      onClose()
-      return
-    }
-
-    setSaveError(SAVE_ERROR)
   }
 
   function handleOpenFile() {
@@ -399,133 +388,86 @@ export function ItemDetailsDialog({ itemId, onClose, onChanged }: ItemDetailsDia
                     onChange={(next) => void handleTagsChange(next)}
                   />
 
-                  <dl className="grid gap-2">
-                    <div className="flex flex-wrap justify-between gap-2">
-                      <dt className="text-muted">Created</dt>
-                      <dd className="m-0 font-bold">
-                        <time dateTime={item.createdAt}>{formatDate(item.createdAt)}</time>
-                      </dd>
-                    </div>
-                    <div className="flex flex-wrap justify-between gap-2">
-                      <dt className="text-muted">Updated</dt>
-                      <dd className="m-0 font-bold">
-                        <time dateTime={item.updatedAt}>{formatDate(item.updatedAt)}</time>
-                      </dd>
-                    </div>
-                  </dl>
+                  {/* One box: the file and its actions on top, the facts in a grid below. */}
+                  <section aria-label="Details" className="grid gap-4 rounded-2xl border border-default p-4">
+                    {item.kind === 'file' ? (
+                      <div className="grid gap-3 border-b border-default pb-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          {item.file ? (
+                            <dl className="m-0 grid min-w-0 flex-1 gap-0.5">
+                              <dt className="text-xs text-muted">Original name</dt>
+                              <dd className="m-0 truncate text-sm font-medium" title={item.file.originalName}>
+                                {item.file.originalName}
+                              </dd>
+                            </dl>
+                          ) : null}
+                          <Dropdown>
+                            <Button isDisabled={item.fileMissing} size="sm" variant="secondary">
+                              File actions
+                              <HugeiconsIcon aria-hidden="true" icon={ArrowDown01Icon} size={16} />
+                            </Button>
+                            <Dropdown.Popover>
+                              <Dropdown.Menu
+                                onAction={(key) => {
+                                  if (key === 'preview') setPreviewOpen(true)
+                                  else if (key === 'open') void handleOpenFile()
+                                  else if (key === 'reveal') void handleRevealFile()
+                                }}
+                              >
+                                <Dropdown.Item id="preview" textValue="Preview">
+                                  <Label>Preview</Label>
+                                </Dropdown.Item>
+                                <Dropdown.Item id="open" textValue="Open">
+                                  <Label>Open</Label>
+                                </Dropdown.Item>
+                                <Dropdown.Item id="reveal" textValue="Reveal">
+                                  <Label>Reveal</Label>
+                                </Dropdown.Item>
+                              </Dropdown.Menu>
+                            </Dropdown.Popover>
+                          </Dropdown>
+                        </div>
 
-                  {item.kind === 'file' ? (
-                    <div className="grid gap-3">
-                      <Typography type="h2">File</Typography>
-
-                      {item.file ? (
-                        <dl className="grid gap-2">
-                          <div className="flex flex-wrap justify-between gap-2">
-                            <dt className="text-muted">Original name</dt>
-                            <dd className="m-0 font-bold">{item.file.originalName}</dd>
-                          </div>
-                          <div className="flex flex-wrap justify-between gap-2">
-                            <dt className="text-muted">Size</dt>
-                            <dd className="m-0 font-bold">{formatByteSize(item.file.byteSize)}</dd>
-                          </div>
-                          <div className="flex flex-wrap justify-between gap-2">
-                            <dt className="text-muted">Imported</dt>
-                            <dd className="m-0 font-bold">
-                              <time dateTime={item.file.importedAt}>
-                                {formatDate(item.file.importedAt)}
-                              </time>
-                            </dd>
-                          </div>
-                        </dl>
-                      ) : null}
-
-                      {item.fileMissing ? (
-                        <Typography className="font-semibold text-danger" role="alert" type="body">
-                          This file is missing from the vault folder.
-                        </Typography>
-                      ) : null}
-                      {indexStatus === 'no_text' ? <Typography color="muted" type="body-xs">No searchable text in this PDF</Typography> : null}
-                      {indexStatus === 'pending' ? <Typography color="muted" type="body-xs">Indexing PDF text...</Typography> : null}
-                      {indexStatus === 'failed' ? <Button variant="secondary" onPress={() => { void indexFile(item.id).then((state) => setIndexStatus(state.status)).catch(() => notifyError('Could not retry PDF indexing.')) }}>Retry PDF indexing</Button> : null}
-
-                      <div className="flex flex-wrap gap-2">
-                        <Button isDisabled={item.fileMissing} variant="secondary" onPress={() => setPreviewOpen(true)}>Preview</Button>
-                        <Button
-                          isDisabled={item.fileMissing}
-                          variant="secondary"
-                          onPress={handleOpenFile}
-                        >
-                          Open
-                        </Button>
-                        <Button
-                          isDisabled={item.fileMissing}
-                          variant="secondary"
-                          onPress={handleRevealFile}
-                        >
-                          Reveal
-                        </Button>
+                        {item.fileMissing ? (
+                          <Typography className="font-semibold text-danger" role="alert" type="body-sm">
+                            This file is missing from the vault folder.
+                          </Typography>
+                        ) : null}
+                        {indexStatus === 'no_text' ? <Typography color="muted" type="body-xs">No searchable text in this PDF</Typography> : null}
+                        {indexStatus === 'pending' ? <Typography color="muted" type="body-xs">Indexing PDF text...</Typography> : null}
+                        {indexStatus === 'failed' ? <Button className="justify-self-start" size="sm" variant="secondary" onPress={() => { void indexFile(item.id).then((state) => setIndexStatus(state.status)).catch(() => notifyError('Could not retry PDF indexing.')) }}>Retry PDF indexing</Button> : null}
                       </div>
-                    </div>
-                  ) : null}
+                    ) : null}
+
+                    <dl className="m-0 grid grid-cols-2 gap-x-6 gap-y-3">
+                      {item.file ? (
+                        <>
+                          <DetailCell label="Size" value={formatByteSize(item.file.byteSize)} />
+                          <DetailCell label="Imported" value={item.file.importedAt} isDate />
+                        </>
+                      ) : null}
+                      <DetailCell label="Created" value={item.createdAt} isDate />
+                      <DetailCell label="Updated" value={item.updatedAt} isDate />
+                    </dl>
+                  </section>
                 </div>
               ) : null}
             </Modal.Body>
 
-            {/* Item actions sit on the left, closing and saving on the right. */}
-            <Modal.Footer className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap gap-2">
-                {loadState === 'ready' && item ? (
-                  <Dropdown>
-                    <Button variant="secondary">
-                      More actions
-                      <HugeiconsIcon aria-hidden="true" icon={ArrowDown01Icon} size={16} />
-                    </Button>
-                    <Dropdown.Popover>
-                      <Dropdown.Menu
-                        onAction={(key) => {
-                          if (key === 'trash') setConfirmOpen(true)
-                          else if (key === 'export') {
-                            void (async () => { try { const path = await pickSaveFile(`${item.title.replace(/[\\/:*?"<>|]/g, '_')}.json`); if (path) { await exportItemsJson([item.id], path); notifySuccess('Item exported as JSON') } } catch { notifyError('Could not export item. Try again.') } })()
-                          }
-                        }}
-                      >
-                        <Dropdown.Item id="export" textValue="Export as JSON">
-                          <HugeiconsIcon aria-hidden="true" icon={FileExportIcon} size={16} />
-                          <Label>Export as JSON</Label>
-                        </Dropdown.Item>
-                        <Dropdown.Item id="trash" textValue="Move to trash" variant="danger">
-                          <HugeiconsIcon aria-hidden="true" className="text-danger" icon={Delete02Icon} size={16} />
-                          <Label>Move to trash</Label>
-                        </Dropdown.Item>
-                      </Dropdown.Menu>
-                    </Dropdown.Popover>
-                  </Dropdown>
-                ) : null}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button variant="secondary" onPress={onClose}>
-                  Close
+            <Modal.Footer>
+              <Button variant="secondary" onPress={onClose}>
+                Close
+              </Button>
+              {loadState === 'ready' && item ? (
+                <Button isDisabled={!title.trim()} onPress={() => void handleSaveDetails()}>
+                  Save changes
                 </Button>
-                {loadState === 'ready' && item ? (
-                  <Button isDisabled={!title.trim()} onPress={() => void handleSaveDetails()}>
-                    Save changes
-                  </Button>
-                ) : null}
-              </div>
+              ) : null}
             </Modal.Footer>
           </Modal.Dialog>
         </Modal.Container>
       </Modal.Backdrop>
 
-      <ConfirmDialog
-        confirmLabel="Move to trash"
-        description="This item leaves every list. You can restore it from Trash."
-        open={confirmOpen}
-        title="Move this item to Trash?"
-        tone="danger"
-        onCancel={() => setConfirmOpen(false)}
-        onConfirm={() => void handleTrash()}
-      />
       <FilePreviewDialog itemId={previewOpen ? item?.id ?? null : null} onClose={() => setPreviewOpen(false)} />
     </Modal>
   )

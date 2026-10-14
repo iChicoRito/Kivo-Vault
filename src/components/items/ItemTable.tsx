@@ -13,6 +13,7 @@ import {
   Delete02Icon,
   DeletePutBackIcon,
   EyeIcon,
+  FileExportIcon,
   FolderOpenIcon,
   InboxIcon,
   Link02Icon,
@@ -23,6 +24,7 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react'
 
 import type { ItemKind, ItemSummary } from '../../data/items'
+import { exportItemAsJson } from '../../lib/feedback'
 import { ITEM_DRAG_ID_ATTRIBUTE, startItemDrag } from '../../features/collections/itemDrag'
 import { SelectMark } from './ItemCard'
 import { ListScrollArea } from './ListScrollArea'
@@ -112,6 +114,7 @@ export function ItemTable({
     else if (key === 'open') onOpen?.(item.id)
     else if (key === 'favorite') onToggleFavorite?.(item.id, !item.isFavorite)
     else if (key === 'move') onMove?.(item.id)
+    else if (key === 'export') void exportItemAsJson(item.id, item.title)
     else if (key === 'trash') onTrash?.(item.id)
     else if (key === 'restore') onRestore?.(item.id)
     else if (key === 'delete-permanently') onDeletePermanently?.(item.id)
@@ -272,6 +275,13 @@ export function ItemTable({
                 <Label>Move to collection</Label>
               </Dropdown.Item>
             ) : null}
+            {/* Trash rows restore instead; live rows can be exported. */}
+            {onRestore ? null : (
+              <Dropdown.Item id="export" textValue="Export as JSON">
+                <HugeiconsIcon aria-hidden="true" icon={FileExportIcon} size={16} />
+                <Label>Export as JSON</Label>
+              </Dropdown.Item>
+            )}
             {onRestore ? (
               <Dropdown.Item id="restore" textValue="Restore">
                 <HugeiconsIcon aria-hidden="true" icon={DeletePutBackIcon} size={16} />

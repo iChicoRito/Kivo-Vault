@@ -4,6 +4,7 @@ import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react'
 import {
   Database01Icon,
   Delete02Icon,
+  FileExportIcon,
   EyeIcon,
   File01Icon,
   FolderOpenIcon,
@@ -22,7 +23,7 @@ import { Panel } from '../../components/ui/Panel'
 import { loadStorageReport, type StorageReport } from '../../data/storage'
 import { openItemFile, revealItemFile } from '../../data/files'
 import { trashItems } from '../../data/items'
-import { notifyError } from '../../lib/feedback'
+import { exportItemAsJson, notifyError } from '../../lib/feedback'
 import { ItemDetailsDialog } from '../items/ItemDetailsDialog'
 
 // Same accent steps as the dashboard charts, biggest share first.
@@ -69,7 +70,10 @@ export function StorageManagerPage() {
       void openItemFile(itemId).catch(() => notifyError('Kivo could not open this file. Try again.'))
     else if (key === 'reveal')
       void revealItemFile(itemId).catch(() => notifyError('Kivo could not show this file. Try again.'))
-    else if (key === 'trash') setTrashId(itemId)
+    else if (key === 'export') {
+      const file = report?.largest.find((entry) => entry.itemId === itemId)
+      void exportItemAsJson(itemId, file?.title ?? 'item')
+    } else if (key === 'trash') setTrashId(itemId)
   }
 
   useEffect(() => {
@@ -448,6 +452,10 @@ export function StorageManagerPage() {
                         <Dropdown.Item id="reveal" textValue="Show in folder">
                           <HugeiconsIcon aria-hidden="true" icon={FolderOpenIcon} size={16} />
                           <Label>Show in folder</Label>
+                        </Dropdown.Item>
+                        <Dropdown.Item id="export" textValue="Export as JSON">
+                          <HugeiconsIcon aria-hidden="true" icon={FileExportIcon} size={16} />
+                          <Label>Export as JSON</Label>
                         </Dropdown.Item>
                         <Dropdown.Section
                           aria-label="Danger zone"

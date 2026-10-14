@@ -13,6 +13,7 @@ import {
 } from '@heroui/react'
 import {
   Delete02Icon,
+  FileExportIcon,
   FolderOpenIcon,
   FolderTransferIcon,
   Link02Icon,
@@ -29,7 +30,7 @@ import { useLibraryFilters } from '../../components/items/useLibraryFilters'
 import { SelectionBar } from '../../components/items/SelectionBar'
 import { useSelection } from '../../components/items/useSelection'
 import { ListScrollArea } from '../../components/items/ListScrollArea'
-import { notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
+import { exportItemAsJson, notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
 import { openSourceUrl } from '../../data/files'
 import { listItems, loadItem, moveItemsToCollection, type ItemFilter, type VaultItem } from '../../data/items'
 import { moduleRoutes } from '../modules/ModulePage'
@@ -56,7 +57,7 @@ const {
 const panelLabelClass = 'uppercase'
 
 const OPEN_ERROR = 'Kivo could not open this address.'
-const MOVE_ERROR = 'Kivo could not move this source. Try again.'
+const MOVE_ERROR = 'Kivo could not move these items. Try again.'
 
 // Item summaries stay lean, so each row reads its full record for the address.
 async function loadSources(filter: ItemFilter) {
@@ -85,7 +86,7 @@ function SourcesLoadingSkeleton() {
 }
 
 type LoadState = 'loading' | 'ready' | 'error'
-type MoveState = { id: string; collectionId: string | null } | null
+type MoveState = { ids: string[]; collectionId: string | null } | null
 
 export function SourcesPage() {
   const [loadState, setLoadState] = useState<LoadState>('loading')
@@ -167,10 +168,12 @@ export function SourcesPage() {
     if (!moveTarget) return
 
     try {
-      await moveItemsToCollection([moveTarget.id], moveTarget.collectionId)
+      await moveItemsToCollection(moveTarget.ids, moveTarget.collectionId)
+      const count = moveTarget.ids.length
       setMoveTarget(null)
+      selection.clear()
       reload()
-      notifySuccess('Source moved to collection')
+      notifySuccess(count === 1 ? 'Source moved to collection' : `${count} items moved to collection`)
     } catch {
       notifyError(MOVE_ERROR)
     }
@@ -179,7 +182,14 @@ export function SourcesPage() {
   function handleMenuAction(source: VaultItem, key: string) {
     if (key === 'open') void handleOpen(source)
     if (key === 'edit') openEdit(source.id)
-    if (key === 'move') setMoveTarget({ id: source.id, collectionId: source.collectionId })
+    if (key === 'move') {
+      // A source inside the selection moves the whole selection, like a drag does.
+      const ids = selection.isSelected(source.id)
+        ? selection.selectedIn(sources.map((entry) => entry.id))
+        : [source.id]
+      setMoveTarget({ ids, collectionId: ids.length === 1 ? source.collectionId : null })
+    }
+    if (key === 'export') void exportItemAsJson(source.id, source.title)
     if (key === 'trash') setTrashTarget(source)
   }
 
@@ -315,6 +325,7 @@ export function SourcesPage() {
                           label: 'Move to collection',
                           icon: FolderOpenIcon,
                         },
+                        { id: 'export', label: 'Export as JSON', icon: FileExportIcon },
                         {
                           id: 'trash',
                           label: 'Move to trash',

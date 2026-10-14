@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
 import { HugeiconsIcon, type IconSvgElement } from '@hugeicons/react'
@@ -20,6 +21,8 @@ export type BranchedMenuChild = {
   label: ReactNode
   icon?: MenuIcon
   disabled?: boolean
+  /** Lets the caller start a drag from a child row. */
+  onPointerDown?: (event: ReactPointerEvent<HTMLButtonElement>) => void
 }
 
 export type BranchedMenuItem = {
@@ -244,6 +247,7 @@ export function BranchedMenu({
                         tabIndex={isOpen ? 0 : -1}
                         data-bm-row={kid.value}
                         onClick={() => select(kid.value, kid)}
+                        onPointerDown={kid.onPointerDown}
                         onContextMenu={onContextMenu ? (event) => onContextMenu(event, kid) : undefined}
                       >
                         {kid.icon ? (

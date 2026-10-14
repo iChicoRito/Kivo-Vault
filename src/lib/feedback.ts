@@ -1,5 +1,6 @@
 import { toast } from '@heroui/react'
 import { restoreItems, trashItems } from '../data/items'
+import { exportItemsJson, pickSaveFile } from '../data/portability'
 
 export type TrashWithUndoOptions = {
   ids: string[]
@@ -65,6 +66,19 @@ export async function trashWithUndo({
     actionProps: { children: 'Undo', onPress: () => void restore() },
   })
   return true
+}
+
+/** Asks where to save, then exports one item as JSON. Never throws. */
+export async function exportItemAsJson(id: string, title: string): Promise<void> {
+  try {
+    const path = await pickSaveFile(`${title.replace(/[\\/:*?"<>|]/g, '_')}.json`)
+    if (!path) return
+
+    await exportItemsJson([id], path)
+    notifySuccess('Item exported as JSON')
+  } catch {
+    notifyError('Could not export item. Try again.')
+  }
 }
 
 /** Bulk version of `trashWithUndo` with plural messages. */

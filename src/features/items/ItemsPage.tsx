@@ -78,7 +78,7 @@ export function ItemsPage() {
   const [favorite, setFavorite] = useState(false)
   const [page, setPage] = useState(1)
 
-  const [moveId, setMoveId] = useState<string | null>(null)
+  const [moveIds, setMoveIds] = useState<string[]>([])
   const [moveOpen, setMoveOpen] = useState(false)
   const [targetCollectionId, setTargetCollectionId] = useState<string | null>(null)
   const [trashId, setTrashId] = useState<string | null>(null)
@@ -160,7 +160,8 @@ export function ItemsPage() {
   }
 
   function openMove(id: string) {
-    setMoveId(id)
+    // A row inside the selection moves the whole selection, like a drag does.
+    setMoveIds(selection.isSelected(id) ? selection.selectedIn(items.map((item) => item.id)) : [id])
     setTargetCollectionId(null)
     setMoveOpen(true)
   }
@@ -171,17 +172,19 @@ export function ItemsPage() {
   }
 
   async function handleMove() {
-    if (!moveId) return
+    if (moveIds.length === 0) return
 
     try {
-      await moveItemsToCollection([moveId], targetCollectionId)
+      await moveItemsToCollection(moveIds, targetCollectionId)
+      const count = moveIds.length
       setMoveOpen(false)
-      setMoveId(null)
+      setMoveIds([])
+      selection.clear()
       setTargetCollectionId(null)
       reload()
-      notifySuccess('Item moved to collection')
+      notifySuccess(count === 1 ? 'Item moved to collection' : `${count} items moved to collection`)
     } catch {
-      notifyError('Kivo could not move this item. Try again.')
+      notifyError('Kivo could not move these items. Try again.')
     }
   }
 
@@ -321,7 +324,7 @@ export function ItemsPage() {
         onOpenChange={(isOpen) => {
           if (!isOpen) {
             setMoveOpen(false)
-            setMoveId(null)
+            setMoveIds([])
           }
         }}
       >

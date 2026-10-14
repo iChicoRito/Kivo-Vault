@@ -37,6 +37,7 @@ import {
   ITEM_DRAG_END_EVENT,
   ITEM_DRAG_OVER_EVENT,
   ITEM_DRAG_START_EVENT,
+  startItemDrag,
   type ItemDragOverDetail,
   type ItemDropDetail,
 } from './itemDrag'
@@ -68,7 +69,6 @@ type ItemsEntry = {
   items: ItemSummary[]
 }
 
-type Notice = { tone: 'ok' | 'error'; text: string }
 
 /** What the single row menu is open on: a folder head or one item row. */
 type MenuTarget = { kind: 'folder'; collection: Collection } | { kind: 'item'; item: ItemSummary }
@@ -142,7 +142,6 @@ export function CollectionFolderPanel() {
   const [collections, setCollections] = useState<Collection[] | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [overId, setOverId] = useState<string | null>(null)
-  const [notice, setNotice] = useState<Notice | null>(null)
   const [openIds, setOpenIds] = useState<string[]>([])
   const [itemsById, setItemsById] = useState<Record<string, ItemsEntry>>({})
   const [menuTarget, setMenuTarget] = useState<MenuTarget | null>(null)
@@ -216,7 +215,6 @@ export function CollectionFolderPanel() {
   useEffect(() => {
     function handleStart() {
       setIsDragging(true)
-      setNotice(null)
     }
 
     function handleEnd() {
@@ -236,19 +234,24 @@ export function CollectionFolderPanel() {
       const target = collections?.find((collection) => collection.id === detail.collectionId)
 
       setOverId(null)
-      setNotice(null)
+
+      // Dropping rows back on the folder they already sit in changes nothing.
+      const known = Object.values(itemsById).flatMap((entry) => entry.items)
+      const sameFolder = detail.itemIds.every(
+        (id) => known.find((item) => item.id === id)?.collectionId === detail.collectionId,
+      )
+      if (sameFolder) return
 
       try {
         await moveItemsToCollection(detail.itemIds, detail.collectionId)
       } catch {
-        setNotice({ tone: 'error', text: MOVE_ERROR })
+        notifyError(MOVE_ERROR)
         return
       }
 
-      setNotice({
-        tone: 'ok',
-        text: target ? `Moved to ${target.name}` : 'Item moved',
-      })
+      const count = detail.itemIds.length
+      const name = target ? target.name : 'collection'
+      notifySuccess(count === 1 ? `Moved to ${name}` : `${count} items moved to ${name}`)
 
       try {
         setCollections(await listCollections())
@@ -274,7 +277,7 @@ export function CollectionFolderPanel() {
       window.removeEventListener(ITEM_DRAG_OVER_EVENT, handleOver)
       window.removeEventListener(ITEM_DROPPED_EVENT, handleDropped)
     }
-  }, [collections, openIds, loadItems])
+  }, [collections, openIds, itemsById, loadItems])
 
   // Every vault write announces itself, so the panel reloads its collections and
   // each open branch without the caller passing props. A refresh keeps the rows
@@ -336,12 +339,10 @@ export function CollectionFolderPanel() {
   }
 
   async function openItem(item: ItemSummary) {
-    setNotice(null)
-
     try {
       await openItemByKind(item, (id) => navigate(`/notes/${id}`))
     } catch {
-      setNotice({ tone: 'error', text: OPEN_ERROR })
+      notifyError(OPEN_ERROR)
     }
   }
 
@@ -358,7 +359,11 @@ export function CollectionFolderPanel() {
     } else {
       children = (entry?.items ?? []).map((item) => {
         itemLookup[item.id] = item
-        return { value: item.id, label: itemTitle(item) }
+        return {
+          value: item.id,
+          label: itemTitle(item),
+          onPointerDown: (event) => startItemDrag(event, [item.id]),
+        }
       })
     }
 
@@ -576,17 +581,6 @@ export function CollectionFolderPanel() {
             ))}
           </ul>
         )}
-
-        {notice ? (
-          <Typography
-            className={notice.tone === 'error' ? 'font-semibold text-danger' : undefined}
-            color="muted"
-            role={notice.tone === 'error' ? 'alert' : 'status'}
-            type="body-xs"
-          >
-            {notice.text}
-          </Typography>
-        ) : null}
       </aside>
 
       {/* The popover anchors to this zero-size mark so the menu opens where the

@@ -14,6 +14,7 @@ import {
 } from '@heroui/react'
 import {
   Delete02Icon,
+  FileExportIcon,
   FolderOpenIcon,
   FolderTransferIcon,
   GridViewIcon,
@@ -37,7 +38,7 @@ import { SelectionBar } from '../../components/items/SelectionBar'
 import { useSelection } from '../../components/items/useSelection'
 import { ListScrollArea } from '../../components/items/ListScrollArea'
 import { CollectionSelect, ConfirmDialog } from '../../components/items/dialogs'
-import { notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
+import { exportItemAsJson, notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
 import type { NoteView } from '../../data/settings'
 import {
   listItems,
@@ -114,9 +115,9 @@ function NotesLoadingSkeleton({ view }: { view: NoteView }) {
 type LoadState = 'loading' | 'ready' | 'error'
 
 type MoveState = {
-  id: string
+  ids: string[]
   collectionId: string | null
-  initialCollectionId: string | null
+  initialCollectionId?: string | null
 }
 
 export function NotesPage() {
@@ -213,10 +214,15 @@ export function NotesPage() {
   }
 
   function openMove(item: ItemSummary) {
+    // A card inside the selection moves the whole selection, like a drag does.
+    const ids = selection.isSelected(item.id)
+      ? selection.selectedIn(items.map((entry) => entry.id))
+      : [item.id]
+
     setMoveTarget({
-      id: item.id,
-      collectionId: item.collectionId,
-      initialCollectionId: item.collectionId,
+      ids,
+      collectionId: ids.length === 1 ? item.collectionId : null,
+      initialCollectionId: ids.length === 1 ? item.collectionId : undefined,
     })
   }
 
@@ -225,18 +231,23 @@ export function NotesPage() {
 
     const target = moveTarget
 
-    if (target.collectionId === target.initialCollectionId) {
+    if (target.ids.length === 1 && target.collectionId === target.initialCollectionId) {
       setMoveTarget(null)
       return
     }
 
     try {
-      await moveItemsToCollection([target.id], target.collectionId)
+      await moveItemsToCollection(target.ids, target.collectionId)
       setMoveTarget(null)
+      selection.clear()
       reload()
-      notifySuccess('Note moved to collection')
+      notifySuccess(
+        target.ids.length === 1
+          ? 'Note moved to collection'
+          : `${target.ids.length} items moved to collection`,
+      )
     } catch {
-      notifyError('Kivo could not move this note. Try again.')
+      notifyError('Kivo could not move these items. Try again.')
     }
   }
 
@@ -244,6 +255,7 @@ export function NotesPage() {
     if (key === 'favorite') void toggleFavorite(item)
     if (key === 'pin') void togglePin(item)
     if (key === 'move') openMove(item)
+    if (key === 'export') void exportItemAsJson(item.id, item.title)
     if (key === 'trash') setTrashTarget(item)
   }
 
@@ -413,6 +425,7 @@ export function NotesPage() {
                       label: 'Move to collection',
                       icon: FolderOpenIcon,
                     },
+                    { id: 'export', label: 'Export as JSON', icon: FileExportIcon },
                     {
                       id: 'trash',
                       label: 'Move to trash',
@@ -525,9 +538,17 @@ export function NotesPage() {
           <Modal.Container>
             <Modal.Dialog>
               <DialogHeader
-                description="Pick where this note should live."
+                description={
+                  moveTarget && moveTarget.ids.length > 1
+                    ? 'Pick where these items should live.'
+                    : 'Pick where this note should live.'
+                }
                 icon={FolderTransferIcon}
-                title="Move note to collection"
+                title={
+                  moveTarget && moveTarget.ids.length > 1
+                    ? `Move ${moveTarget.ids.length} items to collection`
+                    : 'Move note to collection'
+                }
               />
               <Modal.Body className="grid gap-3">
                 <CollectionSelect

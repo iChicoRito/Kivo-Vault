@@ -15,6 +15,7 @@ import {
 } from '@heroui/react'
 import {
   Delete02Icon,
+  FileExportIcon,
   EyeIcon,
   FileAddIcon,
   FolderOpenIcon,
@@ -43,7 +44,7 @@ import {
   type ItemSummary,
 } from '../../data/items'
 import { openItemFile, pickFiles, revealItemFile } from '../../data/files'
-import { notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
+import { exportItemAsJson, notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
 import { CollectionFolderPanel } from '../collections/CollectionFolderPanel'
 import { startItemDrag } from '../collections/itemDrag'
 import { DialogHeader } from '../../components/DialogHeader'
@@ -57,10 +58,10 @@ const IMPORT_ERROR = 'Kivo could not import one or more files. Try again.'
 const OPEN_ERROR = 'Kivo could not open this file. It may be missing from this device.'
 const REVEAL_ERROR = 'Kivo could not reveal this file. It may be missing from this device.'
 const RENAME_ERROR = 'Kivo could not rename this file. Try again.'
-const MOVE_ERROR = 'Kivo could not move this file. Try again.'
+const MOVE_ERROR = 'Kivo could not move these items. Try again.'
 
 type RenameState = { id: string; title: string } | null
-type MoveState = { id: string; collectionId: string | null } | null
+type MoveState = { ids: string[]; collectionId: string | null } | null
 
 function FilesLoadingSkeleton() {
   return (
@@ -176,8 +177,13 @@ export function FilesPage() {
     else if (key === 'reveal') void handleReveal(file.id)
     else if (key === 'rename') openRename(file)
     else if (key === 'move') {
-      setMoveTarget({ id: file.id, collectionId: file.collectionId })
-    } else if (key === 'trash') setTrashTarget(file.id)
+      // A file inside the selection moves the whole selection, like a drag does.
+      const ids = selection.isSelected(file.id)
+        ? selection.selectedIn(files.map((entry) => entry.id))
+        : [file.id]
+      setMoveTarget({ ids, collectionId: ids.length === 1 ? file.collectionId : null })
+    } else if (key === 'export') void exportItemAsJson(file.id, file.title)
+    else if (key === 'trash') setTrashTarget(file.id)
   }
 
   function openRename(file: ItemSummary) {
@@ -222,10 +228,12 @@ export function FilesPage() {
     if (!moveTarget) return
 
     try {
-      await moveItemsToCollection([moveTarget.id], moveTarget.collectionId)
+      await moveItemsToCollection(moveTarget.ids, moveTarget.collectionId)
+      const count = moveTarget.ids.length
       setMoveTarget(null)
+      selection.clear()
       reload()
-      notifySuccess('File moved to collection')
+      notifySuccess(count === 1 ? 'File moved to collection' : `${count} items moved to collection`)
     } catch {
       notifyError(MOVE_ERROR)
     }
@@ -382,6 +390,7 @@ export function FilesPage() {
                       },
                       { id: 'rename', label: 'Rename', icon: NoteEditIcon },
                       { id: 'move', label: 'Move to collection', icon: FolderOpenIcon },
+                      { id: 'export', label: 'Export as JSON', icon: FileExportIcon },
                       { id: 'trash', label: 'Move to trash', icon: Delete02Icon, danger: true },
                     ]
 

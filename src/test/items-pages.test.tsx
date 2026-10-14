@@ -504,6 +504,14 @@ describe('ItemsPage', () => {
     expect(within(screen.getByRole('toolbar', { name: 'Selection' })).getByText('0 selected')).toBeInTheDocument()
   })
 
+  it('offers Export as JSON in the row menu', async () => {
+    renderItemsPage()
+    await screen.findByText('Alpha note')
+
+    openRowMenu('Alpha note')
+    expect(await screen.findByRole('menuitem', { name: 'Export as JSON' })).toBeInTheDocument()
+  })
+
   it('moves a row to a collection from its action menu', async () => {
     renderItemsPage()
     await screen.findByText('Alpha note')
@@ -525,6 +533,36 @@ describe('ItemsPage', () => {
     )
   })
 
+  it('moves every selected item when Move to collection runs on a selected row', async () => {
+    renderItemsPage()
+    await screen.findByText('Alpha note')
+
+    openRowMenu('Alpha note')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Select' }))
+    const bar = await screen.findByRole('toolbar', { name: 'Selection' })
+    fireEvent.click(within(bar).getByRole('checkbox', { name: 'Select all' }))
+
+    openRowMenu('Alpha note')
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Move to collection' }))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('Collection'), {
+      target: { value: 'collection-1' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move' }))
+
+    await waitFor(() =>
+      expect(itemsMock.moveItemsToCollection).toHaveBeenCalledWith(
+        expect.arrayContaining(['note-1']),
+        'collection-1',
+      ),
+    )
+    expect(itemsMock.moveItemsToCollection.mock.calls.at(-1)?.[0]).toHaveLength(2)
+    await waitFor(() =>
+      expect(feedbackMock.notifySuccess).toHaveBeenCalledWith('2 items moved to collection'),
+    )
+  })
+
   it('shows a danger toast and keeps the move dialog open when the move fails', async () => {
     itemsMock.moveItemsToCollection.mockRejectedValueOnce(new Error('move failed'))
     renderItemsPage()
@@ -537,7 +575,7 @@ describe('ItemsPage', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Move' }))
 
     await waitFor(() =>
-      expect(feedbackMock.notifyError).toHaveBeenCalledWith('Kivo could not move this item. Try again.'),
+      expect(feedbackMock.notifyError).toHaveBeenCalledWith('Kivo could not move these items. Try again.'),
     )
     expect(screen.getByRole('heading', { name: 'Move to collection' })).toBeInTheDocument()
   })
@@ -654,8 +692,7 @@ describe('ItemDetailsDialog', () => {
     await screen.findByRole('textbox', { name: 'Title' })
 
     expect(screen.queryByText('Original name')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Open' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Reveal' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'File actions' })).not.toBeInTheDocument()
   })
 
   it('shows the file fields and opens or reveals the managed file', async () => {
@@ -665,10 +702,12 @@ describe('ItemDetailsDialog', () => {
     expect(await screen.findByText('gamma.pdf')).toBeInTheDocument()
     expect(screen.getByText('2 KB')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open' }))
+    fireEvent.click(screen.getByRole('button', { name: 'File actions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open' }))
     await waitFor(() => expect(filesMock.openItemFile).toHaveBeenCalledWith('file-1'))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reveal' }))
+    fireEvent.click(screen.getByRole('button', { name: 'File actions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Reveal' }))
     await waitFor(() => expect(filesMock.revealItemFile).toHaveBeenCalledWith('file-1'))
   })
 
@@ -679,28 +718,15 @@ describe('ItemDetailsDialog', () => {
     expect(
       await screen.findByText('This file is missing from the vault folder.'),
     ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Open' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Reveal' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'File actions' })).toBeDisabled()
   })
 
-  it('trashes the item, closes the dialog, and notifies the parent', async () => {
-    const { onClose, onChanged } = renderDetails('note-1')
+  it('keeps export and trash out of the dialog', async () => {
+    renderDetails('note-1')
     await screen.findByRole('textbox', { name: 'Title' })
 
-    fireEvent.click(screen.getByRole('button', { name: 'More actions' }))
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Move to trash' }))
-
-    const heading = await screen.findByRole('heading', { name: 'Move this item to Trash?' })
-    const confirmDialog = heading.closest('[role="dialog"]') as HTMLElement
-    expect(confirmDialog).not.toBeNull()
-
-    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Move to trash' }))
-
-    await waitFor(() =>
-      expect(feedbackMock.trashWithUndo).toHaveBeenCalledWith({ ids: ['note-1'], label: 'Item' }),
-    )
-    expect(onChanged).toHaveBeenCalledTimes(1)
-    expect(onClose).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: 'Export as JSON' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument()
   })
 
   it('shows a danger toast and keeps the inline error when saving details fails', async () => {

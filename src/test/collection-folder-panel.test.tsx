@@ -437,7 +437,7 @@ describe('CollectionFolderPanel', () => {
     collectionsMock.listCollections
       .mockResolvedValueOnce([collection({ id: 'col-1', name: 'Work', itemCount: 1 })])
       .mockResolvedValueOnce([collection({ id: 'col-1', name: 'Work', itemCount: 2 })])
-    itemsMock.listItems.mockResolvedValue([item()])
+    itemsMock.listItems.mockResolvedValue([item({ collectionId: null })])
 
     renderPanel()
 
@@ -450,7 +450,9 @@ describe('CollectionFolderPanel', () => {
     await dropItem('n1', 'col-1')
 
     expect(itemsMock.moveItemsToCollection).toHaveBeenCalledWith(['n1'], 'col-1')
-    expect(await within(panel).findByText('Moved to Work')).toBeInTheDocument()
+    // The confirmation is a toast, never text inside the panel.
+    expect(feedbackMock.notifySuccess).toHaveBeenCalledWith('Moved to Work')
+    expect(within(panel).queryByText('Moved to Work')).not.toBeInTheDocument()
     await waitFor(() =>
       expect(within(panel).getByRole('button', { name: 'Work 2 Items' })).toBeInTheDocument(),
     )
@@ -473,9 +475,7 @@ describe('CollectionFolderPanel', () => {
 
     await dropItem('n1', 'col-1')
 
-    expect(await within(panel).findByRole('alert')).toHaveTextContent(
-      'Could not move this item. Try again.',
-    )
+    expect(feedbackMock.notifyError).toHaveBeenCalledWith('Could not move this item. Try again.')
     expect(within(panel).getByRole('button', { name: 'Work 1 Item' })).toBeInTheDocument()
     expect(section).not.toHaveClass('outline-focus')
   })

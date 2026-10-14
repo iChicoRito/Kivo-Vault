@@ -23,6 +23,7 @@ import {
   ArrowLeft01Icon,
   CheckmarkSquare02Icon,
   Delete02Icon,
+  FileExportIcon,
   Download01Icon,
   EyeIcon,
   FolderAddIcon,
@@ -69,7 +70,7 @@ import {
   type ItemSummary,
 } from '../../data/items'
 import type { CollectionsView } from '../../data/settings'
-import { notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
+import { exportItemAsJson, notifyError, notifySuccess, trashManyWithUndo, trashWithUndo } from '../../lib/feedback'
 import { useVaultChanged } from '../../lib/useVaultChanged'
 import { CollectionFolderPanel } from './CollectionFolderPanel'
 import { CollectionFolderFloat } from './CollectionFolderFloat'
@@ -175,6 +176,7 @@ function itemActions(item: ItemSummary): ItemCardAction[] {
 
   actions.push({ id: 'move', label: 'Move to collection', icon: FolderOpenIcon })
   actions.push({ id: 'remove', label: 'Remove from collection', icon: FolderMinusIcon })
+  actions.push({ id: 'export', label: 'Export as JSON', icon: FileExportIcon })
   actions.push({ id: 'trash', label: 'Move to trash', icon: Delete02Icon, danger: true })
 
   return actions
@@ -254,7 +256,7 @@ export function CollectionsPage() {
   } | null>(null)
   const [trashItem, setTrashItem] = useState<ItemSummary | null>(null)
   const [moveTarget, setMoveTarget] = useState<{
-    id: string
+    ids: string[]
     collectionId: string | null
   } | null>(null)
   const detailRef = useRef<HTMLDivElement>(null)
@@ -273,7 +275,14 @@ export function CollectionsPage() {
   const openedFromUrl = useRef(false)
   const loadedCollectionIdRef = useRef<string | null>(null)
 
-  useVaultChanged(() => setItemsAttempt((current) => current + 1))
+  // Any vault write can empty or fill a folder, so the grid cards (and their
+  // hover pills) reload the collections too, without the loading skeleton.
+  useVaultChanged(() => {
+    setItemsAttempt((current) => current + 1)
+    listCollections()
+      .then(setCollections)
+      .catch(() => undefined)
+  })
 
   const loadCollections = useCallback(async () => {
     setLoadState('loading')
@@ -699,20 +708,26 @@ export function CollectionsPage() {
   }
 
   function openItemMove(item: ItemSummary) {
-    setMoveTarget({ id: item.id, collectionId: item.collectionId })
+    // An item inside the selection moves the whole selection, like a drag does.
+    const ids = selection.isSelected(item.id)
+      ? selection.selectedIn(items.map((entry) => entry.id))
+      : [item.id]
+    setMoveTarget({ ids, collectionId: ids.length === 1 ? item.collectionId : null })
   }
 
   async function handleItemMove() {
     if (!moveTarget) return
 
     try {
-      await moveItemsToCollection([moveTarget.id], moveTarget.collectionId)
+      await moveItemsToCollection(moveTarget.ids, moveTarget.collectionId)
+      const count = moveTarget.ids.length
       setMoveTarget(null)
+      selection.clear()
       setItemsAttempt((current) => current + 1)
       await loadCollections()
-      notifySuccess('Item moved to collection')
+      notifySuccess(count === 1 ? 'Item moved to collection' : `${count} items moved to collection`)
     } catch {
-      notifyError('Kivo could not move this item. Try again.')
+      notifyError('Kivo could not move these items. Try again.')
     }
   }
 
@@ -722,6 +737,7 @@ export function CollectionsPage() {
     else if (key === 'reveal') void handleItemReveal(item)
     else if (key === 'move') openItemMove(item)
     else if (key === 'remove') void handleItemRemove(item)
+    else if (key === 'export') void exportItemAsJson(item.id, item.title)
     else if (key === 'trash') setTrashItem(item)
   }
 

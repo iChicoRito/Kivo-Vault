@@ -1,6 +1,6 @@
 [package]
 name = "kivo"
-version = "0.5.1"
+version = "0.5.2"
 description = "Kivo desktop archive"
 authors = ["Kivo"]
 edition = "2021"
